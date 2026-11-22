@@ -70,7 +70,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckGit(CancellationToken ct)
     {
-        var r = await runner.RunAsync("git", ["--version"], ct);
+        var r = await runner.RunAsync("git", ["--version"], cancellationToken: ct);
         return r.Succeeded
             ? new("git", CheckStatus.Ok, FirstLine(r.StandardOutput))
             : new("git", CheckStatus.Failed, "git not found", "sudo apt install git");
@@ -78,7 +78,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckTmux(CancellationToken ct)
     {
-        var r = await runner.RunAsync("tmux", ["-V"], ct);
+        var r = await runner.RunAsync("tmux", ["-V"], cancellationToken: ct);
         if (!r.Succeeded)
             return new("tmux", CheckStatus.Failed, "tmux not found", "sudo apt install tmux");
         var version = ParseVersion(r.StandardOutput);
@@ -91,7 +91,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckDotnetSdk(CancellationToken ct)
     {
-        var r = await runner.RunAsync("dotnet", ["--list-sdks"], ct);
+        var r = await runner.RunAsync("dotnet", ["--list-sdks"], cancellationToken: ct);
         if (r.NotFound)
             return new(".NET SDK", CheckStatus.Failed, "dotnet not found", $"sudo apt install dotnet-sdk-{OpenSimRuntimeMajor}.0");
         var sdks = Lines(r.StandardOutput).Select(l => l.Split(' ')[0]).ToList();
@@ -105,7 +105,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
     private async Task<CheckResult> CheckDotnetRuntime(CancellationToken ct)
     {
         const string name = ".NET 8 runtime";
-        var r = await runner.RunAsync("dotnet", ["--list-runtimes"], ct);
+        var r = await runner.RunAsync("dotnet", ["--list-runtimes"], cancellationToken: ct);
         if (r.NotFound)
             return new(name, CheckStatus.Failed, "dotnet not found", $"sudo apt install dotnet-runtime-{OpenSimRuntimeMajor}.0");
         var versions = Lines(r.StandardOutput)
@@ -121,7 +121,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckLibgdiplus(CancellationToken ct)
     {
-        var r = await runner.RunAsync("ldconfig", ["-p"], ct);
+        var r = await runner.RunAsync("ldconfig", ["-p"], cancellationToken: ct);
         if (!r.Succeeded)
             return new("libgdiplus", CheckStatus.Warning, "could not run ldconfig -p to look for it");
         return r.StandardOutput.Contains("libgdiplus.so", StringComparison.Ordinal)
@@ -132,9 +132,9 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckMariaDbClient(CancellationToken ct)
     {
-        var r = await runner.RunAsync("mariadb", ["--version"], ct);
+        var r = await runner.RunAsync("mariadb", ["--version"], cancellationToken: ct);
         if (r.NotFound)
-            r = await runner.RunAsync("mysql", ["--version"], ct);
+            r = await runner.RunAsync("mysql", ["--version"], cancellationToken: ct);
         return r.Succeeded
             ? new("MariaDB client", CheckStatus.Ok, FirstLine(r.StandardOutput))
             : new("MariaDB client", CheckStatus.Warning, "not found; needed only for MariaDB instances",
@@ -143,7 +143,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
 
     private async Task<CheckResult> CheckSystemd(CancellationToken ct)
     {
-        var r = await runner.RunAsync("systemctl", ["--version"], ct);
+        var r = await runner.RunAsync("systemctl", ["--version"], cancellationToken: ct);
         return r.Succeeded
             ? new("systemd", CheckStatus.Ok, FirstLine(r.StandardOutput))
             : new("systemd", CheckStatus.Warning, "systemctl not found; instances can only run in the foreground");
@@ -152,12 +152,12 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
     private async Task<CheckResult> CheckAccount(AccountSettings account, CancellationToken ct)
     {
         const string name = "account";
-        var user = await runner.RunAsync("getent", ["passwd", account.User], ct);
+        var user = await runner.RunAsync("getent", ["passwd", account.User], cancellationToken: ct);
         if (!user.Succeeded)
             return new(name, CheckStatus.Warning, $"user '{account.User}' does not exist",
                 "The osctl package creates it");
 
-        var groups = await runner.RunAsync("id", ["-nG"], ct);
+        var groups = await runner.RunAsync("id", ["-nG"], cancellationToken: ct);
         var mine = groups.Succeeded
             ? groups.StandardOutput.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : [];

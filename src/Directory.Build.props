@@ -12,6 +12,12 @@
     <MinVerTagPrefix>v</MinVerTagPrefix>
     <MinVerMinimumMajorMinor>0.1</MinVerMinimumMajorMinor>
   </PropertyGroup>
+  <!-- osctl is Linux only (PLAN.md "Resolved decisions"): Unix-only APIs such as file modes need no guards. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>linux</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MinVer" Version="8.0.0" PrivateAssets="all" />
   </ItemGroup>

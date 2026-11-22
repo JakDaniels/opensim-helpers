@@ -44,10 +44,17 @@ internal sealed class FakeRunner : IProcessRunner
         return this;
     }
 
-    public Task<ProcessResult> RunAsync(string program, IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
+    public List<ProcessRunOptions?> Options { get; } = [];
+
+    public Task<ProcessResult> RunAsync(
+        string program,
+        IReadOnlyList<string> arguments,
+        ProcessRunOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
         var line = string.Join(' ', [program, .. arguments]);
         Calls.Add(line);
+        Options.Add(options);
         return Task.FromResult(answers.TryGetValue(line, out var result) ? result : ProcessResult.Missing(program));
     }
 }

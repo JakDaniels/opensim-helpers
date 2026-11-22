@@ -9,13 +9,19 @@ backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10
 source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
 
 ## Where we are
-- Phase 0 (skeleton) under way: solution `src/Osctl.slnx` (`src/Osctl`, assembly `osctl`; `src/Osctl.Tests`, xUnit).
+- Phase 0 (skeleton) done, apart from CI's first run; next is phase 1 (builds). Solution `src/Osctl.slnx` (`src/Osctl`, assembly `osctl`; `src/Osctl.Tests`, xUnit).
   `dotnet test src` runs the tests; `dotnet run --project src/Osctl -- doctor` checks the machine.
 - `Osctl.Ini`: parser and writer that follow Nini's rules (PLAN.md "The ini dialect"), and `IniLoader`, which
   follows OpenSim's `Include-*` handling. Tests read the real files in an OpenSim `bin/`: `../opensim/bin` next to
   this repository, or `OSCTL_TEST_OPENSIM_BIN`; skipped when there is none (as in CI).
 - `Osctl.Settings`: paths (`--root`/`OSCTL_ROOT`, default `/`) and `/etc/osctl/osctl.ini` + `secrets.ini`.
-- All external programs run through `IProcessRunner` (fake in tests).
+- All external programs run through `IProcessRunner` (fake in tests); calls that change the system pass
+  `ProcessRunOptions.Change` (or `ChangesSystem: true`) so `--dry-run` prints them instead.
+- `osctl init` writes the default files from `src/Osctl/Defaults/` (embedded resources). For a development root:
+  `dotnet run --project src/Osctl -- init --root /some/dir`, then `OSCTL_ROOT=/some/dir`.
+- Expected errors: throw `OsctlException` (or the ini/settings exceptions); `CliApp.SetAction` turns them into
+  one line on stderr and exit code 2.
+- CI (`ci.yml`) has not run yet: it runs on pull requests, and by hand only once it is on `main`.
 
 ## Reference code (outside this repository)
 - OpenSim source: `../opensim` (ConfigurationLoader.cs, Application.cs for the command-line switches).

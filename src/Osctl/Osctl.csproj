@@ -10,6 +10,11 @@
     <PackageReference Include="System.CommandLine" Version="3.0.0" />
   </ItemGroup>
 
+  <!-- The default files 'osctl init' writes (and the package installs). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Defaults/*" LogicalName="Osctl.Defaults.%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Osctl.Tests" />
   </ItemGroup>

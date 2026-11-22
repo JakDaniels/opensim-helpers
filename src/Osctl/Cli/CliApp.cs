@@ -5,8 +5,10 @@ using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Osctl.Doctor;
+using Osctl.Ini;
 using Osctl.Processes;
 using Osctl.Settings;
+using Osctl.Setup;
 
 namespace Osctl.Cli;
 
@@ -16,10 +18,16 @@ public sealed record CliEnvironment(IProcessRunner Runner, TextWriter Out, TextW
     public static CliEnvironment Console() => new(new ProcessRunner(), System.Console.Out, System.Console.Error);
 }
 
-/// <summary>The osctl command line (PLAN.md "Commands").</summary>
+/// <summary>
+/// The osctl command line (PLAN.md "Commands"). Exit codes: 0 success, 1 the command ran but found or reported
+/// a failure, 2 a problem osctl can explain (bad settings, missing file, …), printed as one line on stderr.
+/// </summary>
 public static class CliApp
 {
-    private static readonly JsonSerializerOptions Json = new()
+    public const int ExitFailure = 1;
+    public const int ExitError = 2;
+
+    internal static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -35,25 +43,62 @@ public static class CliApp
 
     internal static RootCommand Build(CliEnvironment env)
     {
-        var rootOption = new Option<string?>("--root")
-        {
-            Description = $"Use this directory instead of / for /etc/osctl, /var/lib/osctl and so on (or set {OsctlPaths.RootEnvironmentVariable})",
-            Recursive = true,
-        };
+        var globals = new GlobalOptions(
+            new Option<string?>("--root")
+            {
+                Description = $"Use this directory instead of / for /etc/osctl, /var/lib/osctl and so on (or set {OsctlPaths.RootEnvironmentVariable})",
+                Recursive = true,
+            },
+            new Option<bool>("--dry-run")
+            {
+                Description = "Show what would be changed, and change nothing",
+                Recursive = true,
+            });
 
-        var root = new RootCommand("osctl: manage OpenSimulator instances (MIOS 2.0)") { rootOption };
-        root.Add(DoctorCommand(env, rootOption));
+        var root = new RootCommand("osctl: manage OpenSimulator instances (MIOS 2.0)") { globals.Root, globals.DryRun };
+        root.Add(InitCommand(env, globals));
+        root.Add(DoctorCommand(env, globals));
         return root;
     }
 
-    private static Command DoctorCommand(CliEnvironment env, Option<string?> rootOption)
+    /// <summary>Options every command takes, and what follows from them.</summary>
+    private sealed record GlobalOptions(Option<string?> Root, Option<bool> DryRun)
+    {
+        public OsctlPaths Paths(ParseResult parse) => OsctlPaths.Resolve(parse.GetValue(Root));
+
+        public bool IsDryRun(ParseResult parse) => parse.GetValue(DryRun);
+
+        public IProcessRunner Runner(ParseResult parse, CliEnvironment env) =>
+            IsDryRun(parse) ? new DryRunProcessRunner(env.Runner, env.Out) : env.Runner;
+    }
+
+    private static Command InitCommand(CliEnvironment env, GlobalOptions globals)
+    {
+        var command = new Command("init",
+            "Create osctl's directories and default settings files; existing files are never changed");
+        SetAction(command, env, async (parse, _) =>
+        {
+            var dryRun = globals.IsDryRun(parse);
+            var steps = new Initializer(globals.Paths(parse)).Run(dryRun);
+            foreach (var step in steps.Where(s => s.Action == InitAction.Created))
+            {
+                var what = step.IsDirectory ? "directory" : "file";
+                await env.Out.WriteLineAsync(dryRun ? $"would create {what} {step.Path}" : $"created {what} {step.Path}");
+            }
+            if (steps.All(s => s.Action == InitAction.Kept))
+                await env.Out.WriteLineAsync("Everything is already in place.");
+            return 0;
+        });
+        return command;
+    }
+
+    private static Command DoctorCommand(CliEnvironment env, GlobalOptions globals)
     {
         var json = new Option<bool>("--json") { Description = "Print the results as JSON" };
         var command = new Command("doctor", "Check that this machine has what osctl and OpenSim need") { json };
-        command.SetAction(async (parse, ct) =>
+        SetAction(command, env, async (parse, ct) =>
         {
-            var paths = OsctlPaths.Resolve(parse.GetValue(rootOption));
-            var results = await new Doctor.Doctor(env.Runner, paths).RunAsync(ct);
+            var results = await new Doctor.Doctor(globals.Runner(parse, env), globals.Paths(parse)).RunAsync(ct);
 
             if (parse.GetValue(json))
             {
@@ -70,10 +115,37 @@ public static class CliApp
                 }
             }
 
-            return results.Any(r => r.Status == CheckStatus.Failed) ? 1 : 0;
+            return results.Any(r => r.Status == CheckStatus.Failed) ? ExitFailure : 0;
         });
         return command;
     }
+
+    /// <summary>
+    /// Sets a command's action so that the errors osctl expects (bad settings, unreadable files, refused
+    /// values) end as one line on stderr and exit code 2, instead of a stack trace.
+    /// </summary>
+    private static void SetAction(Command command, CliEnvironment env, Func<ParseResult, CancellationToken, Task<int>> action) =>
+        command.SetAction(async (parse, ct) =>
+        {
+            try
+            {
+                return await action(parse, ct);
+            }
+            catch (Exception e) when (IsExpected(e))
+            {
+                await env.Error.WriteLineAsync($"osctl: {e.Message}");
+                return ExitError;
+            }
+        });
+
+    internal static bool IsExpected(Exception e) => e
+        is OsctlException
+        or IniParseException
+        or IniWriteException
+        or SettingsException
+        or IOException
+        or UnauthorizedAccessException
+        or NotSupportedException;
 
     private static string Label(CheckStatus status) => status switch
     {

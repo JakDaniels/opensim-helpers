@@ -79,6 +79,7 @@ names). Region names follow OpenSim's rules (MIOS's regex, plus anything OpenSim
 ## Commands (first cut)
 
 ```
+osctl init                           create the directories and default settings files (never overwrites)
 osctl doctor                         check dotnet SDK/runtime 8, tmux, git, libgdiplus, MariaDB, permissions
 osctl build add|list|update|rollback|remove <build> [--repo URL] [--ref REF] [--addon REPO[@REF]] [--patches DIR]
 osctl configset list|fetch [<set>]
@@ -102,6 +103,11 @@ osctl run <name> [--foreground]      what the systemd unit runs; not usually cal
 ```
 
 All list/status commands take `--json` so scripts (and the later web UI) can use them.
+
+Every command takes `--root DIR` (or `OSCTL_ROOT`), so development and tests use a directory instead of `/`, and
+`--dry-run`, which prints the commands that would change something (`would run: …`) while queries still run.
+Exit codes: 0 success; 1 the command ran but something failed (a doctor check, an instance that would not start);
+2 an error osctl can explain (bad setting, missing file), printed as one line on stderr.
 
 ## Running instances: systemd + tmux
 
