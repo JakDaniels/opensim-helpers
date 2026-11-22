@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 using System.Text.RegularExpressions;
+using Osctl.Databases;
 using Osctl.Ini;
 using Osctl.Processes;
 using Osctl.Settings;
@@ -22,7 +23,7 @@ public sealed record CheckResult(string Name, CheckStatus Status, string Detail,
 /// <c>osctl doctor</c>: checks that the machine has what osctl and OpenSim need. Failures are things osctl
 /// cannot work without; warnings are things only some features need.
 /// </summary>
-public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
+public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths, IDatabaseFactory? databases = null)
 {
     /// <summary>tmux 3.3 added <c>server-access</c>, which the group-shared consoles use.</summary>
     public static readonly Version MinimumTmux = new(3, 3);
@@ -42,6 +43,8 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
         results.Add(await CheckMariaDbClient(cancellationToken));
         results.Add(await CheckSystemd(cancellationToken));
         results.Add(await CheckAccount(settings.Account, cancellationToken));
+        if (databases is not null)
+            results.Add(await CheckDatabase(settings.Database, cancellationToken));
         return results;
     }
 
@@ -165,6 +168,26 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths)
             return new(name, CheckStatus.Ok, $"user '{account.User}' exists; you can manage instances");
         return new(name, CheckStatus.Warning, $"you are not in group '{account.Group}'",
             $"sudo usermod -aG {account.Group} {Environment.UserName} (then log in again)");
+    }
+
+    private async Task<CheckResult> CheckDatabase(DatabaseSettings db, CancellationToken ct)
+    {
+        const string name = "database";
+        if (string.IsNullOrEmpty(db.AdminPassword))
+            return new(name, CheckStatus.Warning, "not set up (no admin password in secrets.ini); needed only for MariaDB instances",
+                "sudo osctl db init");
+        try
+        {
+            var (version, packet) = await databases!.Admin(db).ProbeAsync(ct);
+            return packet < DatabaseLimits.RecommendedMaxAllowedPacket
+                ? new(name, CheckStatus.Warning, $"{version} at {db.Host}:{db.Port}; max_allowed_packet is only {packet / (1024 * 1024)} MB",
+                    "Set max_allowed_packet = 128M under [mysqld] and restart MariaDB")
+                : new(name, CheckStatus.Ok, $"{version} at {db.Host}:{db.Port} as {db.AdminUser}");
+        }
+        catch (OsctlException e)
+        {
+            return new(name, CheckStatus.Warning, e.Message, "sudo osctl db init");
+        }
     }
 
     /// <summary>The first dotted version number in a text ("tmux 3.3a" → 3.3, "tmux next-3.4" → 3.4).</summary>

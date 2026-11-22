@@ -22,6 +22,23 @@ public static partial class Names
         return name;
     }
 
+    /// <summary>
+    /// Instance names are stricter: no <c>.</c>, which tmux uses in its targets. They also name the instance's
+    /// database, systemd unit and log directory.
+    /// </summary>
+    public static string CheckInstance(string name)
+    {
+        if (!InstancePattern().IsMatch(name))
+            throw new OsctlException(
+                $"'{name}' is not a valid instance name: use letters, digits, '_' and '-', starting with a letter or digit (at most 32)");
+        return name;
+    }
+
+    public static bool IsValidInstance(string name) => InstancePattern().IsMatch(name);
+
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")]
     private static partial Regex Pattern();
+
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9_\-]{0,31}$")]
+    private static partial Regex InstancePattern();
 }

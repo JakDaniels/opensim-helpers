@@ -3,8 +3,28 @@
 
 namespace Osctl.Ini;
 
+/// <summary>One file as it was merged: its path as OpenSim would see it, where it was read from, and its contents.</summary>
+public sealed record IniLayer(string Path, string ReadFrom, IniDocument Document);
+
 /// <summary>The result of loading files with their includes.</summary>
-public sealed record IniLoadResult(IniDocument Document, IReadOnlyList<string> FilesRead, IReadOnlyList<string> Warnings);
+public sealed record IniLoadResult(
+    IniDocument Document,
+    IReadOnlyList<string> FilesRead,
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<IniLayer> Layers);
+
+/// <summary>
+/// Hooks for loading a config set (PLAN.md "Config sets and grids").
+/// <see cref="Overlay"/>: given a path relative to the base directory, the file to read in its place (a
+/// downloaded or shipped file), or null to read the base directory's own.
+/// <see cref="Edit"/>: called with each file's relative path and contents before they are merged (and so before its
+/// includes are followed).
+/// <see cref="IgnoredIncludes"/>: <c>Section|Key</c> include keys that are not followed.
+/// </summary>
+public sealed record IniLoadOptions(
+    Func<string, string?>? Overlay = null,
+    Action<string, IniDocument>? Edit = null,
+    IReadOnlySet<string>? IgnoredIncludes = null);
 
 /// <summary>
 /// Loads a list of ini files and follows their <c>Include-*</c> keys the way OpenSim's ConfigurationLoader does
@@ -18,14 +38,16 @@ public sealed record IniLoadResult(IniDocument Document, IReadOnlyList<string> F
 /// used. A path without wildcards that matches nothing is a warning, as in OpenSim.</item>
 /// </list>
 /// One difference: OpenSim takes wildcard matches in file system order; osctl sorts them, so the result does
-/// not depend on the file system. http(s) includes are not supported (OpenSim reads them as XML).
+/// not depend on the file system. Wildcards match the base directory's files only, not overlaid ones.
+/// http(s) includes are not supported (OpenSim reads them as XML).
 /// </summary>
 public static class IniLoader
 {
     private static readonly char[] Wildcards = ['*', '?'];
 
-    public static IniLoadResult Load(IEnumerable<string> files, string baseDirectory)
+    public static IniLoadResult Load(IEnumerable<string> files, string baseDirectory, IniLoadOptions? options = null)
     {
+        options ??= new IniLoadOptions();
         var baseDir = Path.GetFullPath(baseDirectory);
         var sources = new List<string>();
         foreach (var file in files)
@@ -38,26 +60,44 @@ public static class IniLoader
         var result = new IniDocument();
         var warnings = new List<string>();
         var read = new List<string>();
+        var layers = new List<IniLayer>();
 
         for (var i = 0; i < sources.Count; i++)
         {
-            if (!File.Exists(sources[i]))
-                throw new FileNotFoundException($"Configuration file not found: {sources[i]}", sources[i]);
-            result.Merge(IniParser.ParseFile(sources[i]));
+            var relative = Relative(baseDir, sources[i]);
+            var actual = ReadFrom(options, relative, sources[i]);
+            if (!File.Exists(actual))
+                throw new FileNotFoundException($"Configuration file not found: {actual}", actual);
+
+            var doc = IniParser.ParseFile(actual);
+            options.Edit?.Invoke(relative, doc);
+            result.Merge(doc);
             read.Add(sources[i]);
-            AddIncludes(result, baseDir, sources, warnings);
+            layers.Add(new IniLayer(relative, actual, doc));
+            AddIncludes(result, baseDir, sources, warnings, options);
         }
 
-        return new IniLoadResult(result, read, warnings);
+        return new IniLoadResult(result, read, warnings, layers);
     }
 
-    private static void AddIncludes(IniDocument doc, string baseDir, List<string> sources, List<string> warnings)
+    private static string Relative(string baseDir, string full)
+    {
+        var relative = Path.GetRelativePath(baseDir, full);
+        return relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative) ? full : relative;
+    }
+
+    private static string ReadFrom(IniLoadOptions options, string relative, string full) =>
+        options.Overlay?.Invoke(relative) ?? full;
+
+    private static void AddIncludes(IniDocument doc, string baseDir, List<string> sources, List<string> warnings, IniLoadOptions options)
     {
         foreach (var section in doc.Sections)
         {
             foreach (var entry in section.Entries)
             {
                 if (!entry.Key.StartsWith("Include-", StringComparison.Ordinal))
+                    continue;
+                if (options.IgnoredIncludes?.Contains($"{section.Name}|{entry.Key}") == true)
                     continue;
 
                 if (Uri.TryCreate(entry.Value, UriKind.Absolute, out var uri)
@@ -69,7 +109,17 @@ public static class IniLoader
                 var fixedPart = wildcard < 0 ? entry.Value : entry.Value[..wildcard];
                 var wildPart = wildcard < 0 ? "" : entry.Value[wildcard..];
                 var path = Path.GetFullPath(Path.Combine(baseDir, fixedPart)) + wildPart;
-                var matches = Glob(path);
+
+                List<string> matches;
+                if (wildcard < 0)
+                {
+                    var overlaid = options.Overlay?.Invoke(Relative(baseDir, path));
+                    matches = overlaid is not null || File.Exists(path) ? [path] : [];
+                }
+                else
+                {
+                    matches = Glob(path);
+                }
 
                 if (wildcard < 0 && matches.Count == 0)
                 {

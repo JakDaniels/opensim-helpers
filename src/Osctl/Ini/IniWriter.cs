@@ -12,15 +12,22 @@ public sealed class IniWriteException(string message) : Exception(message);
 /// </summary>
 public static class IniWriter
 {
-    public static void WriteFile(string path, IniDocument doc, IEnumerable<string>? headerComments = null)
+    /// <summary>
+    /// Writes the file in one step (a temporary file renamed over it), so a reader never sees half a file.
+    /// <paramref name="mode"/>: the file's permissions from the start, for files with secrets in them.
+    /// </summary>
+    public static void WriteFile(string path, IniDocument doc, IEnumerable<string>? headerComments = null, UnixFileMode? mode = null)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (directory is not null)
             Directory.CreateDirectory(directory);
 
-        // Write a temporary file and rename it, so a reader never sees half a file.
         var temp = path + ".tmp";
-        using (var writer = new StreamWriter(temp))
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+        if (mode is { } m)
+            options.UnixCreateMode = m;
+        File.Delete(temp);
+        using (var writer = new StreamWriter(new FileStream(temp, options)))
             Write(writer, doc, headerComments);
         File.Move(temp, path, overwrite: true);
     }

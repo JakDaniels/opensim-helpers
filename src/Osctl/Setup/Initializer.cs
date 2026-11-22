@@ -14,6 +14,14 @@ public static class DefaultFiles
     public const string RegionDefaults = "region-defaults.ini";
     public const string OverridesReadme = "overrides-README.txt";
 
+    /// <summary>The shipped config sets: (name, resource), from Defaults/configset-&lt;name&gt;.ini.</summary>
+    public static IEnumerable<(string Name, string Resource)> ConfigSets() =>
+        Assembly.GetExecutingAssembly().GetManifestResourceNames()
+            .Where(r => r.StartsWith("Osctl.Defaults.configset-", StringComparison.Ordinal) && r.EndsWith(".ini", StringComparison.Ordinal))
+            .Select(r => r["Osctl.Defaults.".Length..])
+            .Select(r => (r["configset-".Length..^".ini".Length], r))
+            .Order();
+
     public static string Read(string name)
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"Osctl.Defaults.{name}")
@@ -59,6 +67,8 @@ public sealed class Initializer(OsctlPaths paths)
         WriteFile(steps, paths.SecretsFile, DefaultFiles.Secrets, SecretsMode, dryRun);
         WriteFile(steps, paths.RegionDefaultsFile, DefaultFiles.RegionDefaults, null, dryRun);
         WriteFile(steps, Path.Combine(paths.GlobalOverridesDir, "README.txt"), DefaultFiles.OverridesReadme, null, dryRun);
+        foreach (var (name, resource) in DefaultFiles.ConfigSets())
+            WriteFile(steps, Path.Combine(paths.ConfigSetsDir, name + ".ini"), resource, null, dryRun);
         return steps;
     }
 

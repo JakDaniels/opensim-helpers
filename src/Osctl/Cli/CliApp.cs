@@ -4,8 +4,11 @@
 using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Osctl.ConfigSets;
+using Osctl.Databases;
 using Osctl.Doctor;
 using Osctl.Ini;
+using Osctl.Instances;
 using Osctl.Processes;
 using Osctl.Settings;
 using Osctl.Setup;
@@ -13,9 +16,22 @@ using Osctl.Setup;
 namespace Osctl.Cli;
 
 /// <summary>What commands need from outside: the process runner and where output goes (fakes in tests).</summary>
-public sealed record CliEnvironment(IProcessRunner Runner, TextWriter Out, TextWriter Error, TimeProvider? Time = null)
+public sealed record CliEnvironment(
+    IProcessRunner Runner,
+    TextWriter Out,
+    TextWriter Error,
+    TimeProvider? Time = null,
+    IDownloader? Downloader = null,
+    IPortProbe? Ports = null,
+    IDatabaseFactory? Databases = null)
 {
+    public IDatabaseFactory DatabaseFactory => Databases ?? new MySqlDatabaseFactory(Runner);
+
     public TimeProvider Clock => Time ?? TimeProvider.System;
+
+    public IDownloader Web => Downloader ?? new HttpDownloader();
+
+    public IPortProbe PortProbe => Ports ?? new PortProbe();
 
     public static CliEnvironment Console() => new(new ProcessRunner(), System.Console.Out, System.Console.Error);
 }
@@ -61,6 +77,12 @@ public static class CliApp
         root.Add(InitCommand(env, globals));
         root.Add(DoctorCommand(env, globals));
         root.Add(BuildCommands.Create(env, globals));
+        root.Add(ConfigSetCommands.Create(env, globals));
+        root.Add(InstanceCommands.Create(env, globals));
+        root.Add(InstanceCommands.Regions(env, globals));
+        root.Add(InstanceCommands.List(env, globals));
+        root.Add(ConfigCommands.Create(env, globals));
+        root.Add(DbCommands.Create(env, globals));
         return root;
     }
 
@@ -90,7 +112,7 @@ public static class CliApp
         var command = new Command("doctor", "Check that this machine has what osctl and OpenSim need") { json };
         SetAction(command, env, async (parse, ct) =>
         {
-            var results = await new Doctor.Doctor(globals.Runner(parse, env), globals.Paths(parse)).RunAsync(ct);
+            var results = await new Doctor.Doctor(globals.Runner(parse, env), globals.Paths(parse), env.DatabaseFactory).RunAsync(ct);
 
             if (parse.GetValue(json))
             {
@@ -153,6 +175,8 @@ internal sealed record GlobalOptions(Option<string?> Root, Option<bool> DryRun)
     public OsctlPaths Paths(ParseResult parse) => OsctlPaths.Resolve(parse.GetValue(Root));
 
     public bool IsDryRun(ParseResult parse) => parse.GetValue(DryRun);
+
+    public OsctlSettings Settings(ParseResult parse) => SettingsLoader.Load(Paths(parse)).Settings;
 
     public IProcessRunner Runner(ParseResult parse, CliEnvironment env) =>
         IsDryRun(parse) ? new DryRunProcessRunner(env.Runner, env.Out) : env.Runner;

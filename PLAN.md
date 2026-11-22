@@ -14,10 +14,10 @@ what aged badly. It is written in C# on .NET 10.
 |---|---|
 | Name and CLI | `osctl`, with subcommands (`osctl instance add`, `osctl start`, …), not MIOS's `--flags`. |
 | Supervision | One systemd template unit per instance (`osctl@<name>.service`). OpenSim runs in a tmux pane of its own, so `osctl console <name>` attaches like `mios --view`. Restart limits and "broken" detection come from systemd. osctl has no daemon of its own. |
-| Databases | MariaDB/MySQL for normal instances; SQLite allowed per instance for throwaway standalones. |
+| Databases | MariaDB/MySQL for normal instances (the default for `instance add`); SQLite (`--db sqlite`) for throwaway standalones. |
 | Builds | Named builds (repo + branch/tag, optional addon modules and patches). Each instance chooses a build. |
 | Install layout | A .deb package: `/usr/bin/osctl`, config in `/etc/osctl`, data in `/var/lib/osctl`, run as the system user `opensim`. systemd system units. |
-| First start | Unattended. osctl writes `[Estates] DefaultEstateName/DefaultEstateOwner*` so OpenSim asks nothing. A manual foreground start stays available. |
+| First start | Unattended. osctl writes `[Estates] DefaultEstateName/DefaultEstateOwner*` so OpenSim asks nothing. On a standalone OpenSim creates the owner's account: `instance add` generates its password, shows it once and keeps it in the instance's `secrets.ini` (`--estate-owner-password` sets your own). A manual foreground start stays available. |
 | Scope | Simulators, then Robust grid services, backups (OAR/IAR, DB dumps), scheduled restarts. Stats and a web UI come last. Importing old MIOS installs is **not** in scope. |
 | Console | OpenSim's local console in tmux; **no REST console** (OpenSim's `console = rest` replaces the local console, so the tmux pane could no longer take input). The tmux socket is open to the `opensim` group. `osctl cmd` types into the pane and reads the output back from it. |
 | osctl's own config | ini files, in the same dialect as OpenSim's, so one parser serves both. |
@@ -66,7 +66,7 @@ what aged badly. It is written in C# on .NET 10.
     overrides/*.ini         instance overrides
     regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
     startup_commands.txt, shutdown_commands.txt
-    generated/              OpenSim.ini (combined), empty.ini, Regions/, log4net.config — rebuilt on each start
+    generated/              OpenSim.ini (combined, 0640), Regions/, config/ (empty), log4net.config — rebuilt on each start
     scriptengines/, data/ (SQLite files), backups/
 /var/cache/osctl/assets/<grid>/   Flotsam asset cache, one per grid (sharing between grids is wrong, as MIOS noted)
 /var/log/osctl/<name>/      OpenSim.log, console history
@@ -132,9 +132,13 @@ StartLimitBurst=3        # MIOS's "broken" rule, values from osctl.ini
 `osctl run <name>`:
 1. Regenerates the instance's configuration (below) and checks it (ports free, DB reachable).
 2. Starts a tmux server just for this instance (`tmux -S /run/osctl/<name>.sock`, `remain-on-exit on`) running
-   `dotnet OpenSim.dll -inimaster=empty.ini -inifile=OpenSim.ini -inidirectory=<empty> -logconfig=log4net.config`
+   `dotnet OpenSim.dll -inimaster=none -inifile=generated/OpenSim.ini -inidirectory=generated/config -logconfig=generated/log4net.config`
+   (`none` skips OpenSim's own master file; the empty `config/` stops OpenSim merging any `bin/config/*.ini`;
+   tried by hand in phase 2: a SQLite standalone with two regions started unattended and shut down with exit code 0)
    in the build's `current/bin`. The tmux server stays in the unit's cgroup, so systemd sees and kills everything.
-3. Waits for readiness (log line "LOGINS ENABLED", or `/simstatus/` on the instance port), then sends `READY=1`.
+3. Waits for readiness, then sends `READY=1`. "LOGINS ENABLED" goes to the console only (the tmux pane), not the
+   log; the log has `[RegionReady]: Enabled for region <name>` per region, and `/simstatus/` answers on the
+   instance port. Which to use is settled in phase 3.
 4. Waits for the OpenSim process to exit and exits with its exit code. A `shutdown` typed on the console exits 0
    and the unit stays stopped; a crash exits non-zero and systemd restarts it.
 
@@ -156,22 +160,30 @@ uses RemoteAdmin, because it reports success or failure properly.
 
 For each start (and for `osctl config show`), in order, later wins:
 
-1. `[Const]`: `InstanceName`, `InstancePort` (lowest region port, as MIOS), `InstanceDBName`, `EstateDBName`,
-   `InstanceDir`, `BinDir`, `GridName`, `PublicHostName`.
-2. The config set's files, in the listed order, with `Include-*` followed relative to the build's `bin/`.
-3. `/etc/osctl/overrides/*.ini`, alphabetical.
-4. The instance's `overrides/*.ini`, alphabetical.
-5. Forced settings: PID file, console history, `regionload_regionsdir`, startup/shutdown command files,
-   `ScriptEnginesPath` (XEngine and YEngine), `http_listener_port`/SSL port, asset cache dir, database connection
-   strings (MariaDB, or SQLite paths under `data/`), estate defaults, RemoteAdmin (enabled, localhost only,
-   generated password), `ManagedStatsRemoteFetchURI`, and `[Startup] RegistryLocation` (OpenSim otherwise writes
-   its Mono.Addins registry into the working directory, which is the shared release `bin/`).
+1. The config set's files, loaded as OpenSim loads them from the build's `current/bin` (with the config set's
+   overlay and edits, below).
+2. `/etc/osctl/overrides/*.ini`, alphabetical.
+3. The instance's `overrides/*.ini`, alphabetical.
+4. What osctl sets itself (shown as "set by osctl" by `config explain`), `src/Osctl/Instances/ConfigGenerator.cs`:
+   - `[Const]` `InstanceName`, `InstancePort` (lowest region port, as MIOS), `InstanceDBName`, `EstateDBName`,
+     `InstanceDir`, `GridName`, for `${Const|…}` in overrides;
+   - `[Startup]` `PIDFile`, `ConsoleHistoryFile`, `crash_dir`, `regionload_regionsdir`, startup/shutdown command
+     files, `RegistryLocation`, `ManagedStatsRemoteFetchURI`; `[YEngine] ScriptEnginesPath` (XEngine is gone from
+     current OpenSim); `[Network]` HTTP and HTTPS ports; `[AssetCache] CacheDirectory` (per grid);
+   - everything else OpenSim writes in its working directory, the shared release `bin/` (found by running it):
+     `[Mesh] MeshFileCachePath`, `[MapImageService] TilesStoragePath` and `[GridService] MapTileDirectory`;
+   - `[Estates]` defaults (on a standalone also the owner's UUID, e-mail and password);
+   - `[RemoteAdmin]` on, `access_ip_addresses = 127.0.0.1`, the instance's generated password;
+   - MariaDB: `[DatabaseService]` provider and connection strings (the config set's `Include-Storage` is not
+     followed); SQLite: every `URI=file:` connection string moved into the instance's `data/`.
 
-The `Include-*`, `[Architecture]` and `[Includes]` keys are removed from the result (they have been applied).
-Values stay raw so OpenSim still expands `${Const|…}`. Regions: `region-defaults.ini`, then
-`regions/Regions.ini`, then the per-region module files, written to `generated/Regions/Regions.ini`.
+`Include-*` keys are removed from the result (they have been followed), and so are sections left empty.
+Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `region-defaults.ini`,
+then the instance's other `regions/*.ini` (per-region module settings, by region name), then `regions/Regions.ini`;
+written to `generated/Regions/Regions.ini`. `osctl config show|explain|diff|generate` work on this; passwords are
+shown as `********` unless `--show-secrets`.
 
-Step 2 is loaded the way OpenSim loads it (with its includes, below), and the override files of steps 3 and 4 are
+Step 1 is loaded the way OpenSim loads it (with its includes, below), and the override files of steps 2 and 3 are
 merged on top of that result. Overrides are plain files: an `Include-*` key in one is reported, not followed.
 
 ### The ini dialect
@@ -199,10 +211,29 @@ osctl reads and writes ini files the way Nini does, because Nini is what OpenSim
 
 ## Config sets and grids
 
-A config set lists base files in load order, each from the build's `bin/` (`OpenSimDefaults.ini`,
-`OpenSim.ini.example`, …) or from a URL (cached under `/var/lib/osctl/configsets/`, refreshed by
-`osctl configset fetch`). A config set also names its **grid** (estate database, asset cache, and the scope of
-the location clash check).
+A config set is `/etc/osctl/configsets/<name>.ini` (`src/Osctl/ConfigSets/ConfigSet.cs`; `osctl init` installs the
+shipped ones). It works as an overlay on the build's `bin/`, because grid files include each other by their
+`bin/` paths (OSGrid's `OpenSim.ini` includes `bin/config-include/GridHypergrid.ini`, which includes OSGrid's own
+`GridCommon.ini`):
+
+```
+[ConfigSet]
+    Description = …
+    Mode = standalone | grid      ; standalone: own services, OpenSim creates the estate owner
+    Grid = osgrid                 ; grid mode: shared estate database and asset cache, clash checks
+    Load = OpenSimDefaults.ini, OpenSim.ini
+[Files]                           ; a path as OpenSim reads it from bin/ = where it really comes from:
+    OpenSim.ini = bin:OpenSim.ini.example                       ; another file in bin/
+    config-include/GridCommon.ini = https://download.osgrid.org/GridCommon.ini.txt   ; downloaded
+    config-include/Extra.ini = my-grid/Extra.ini                ; a file under /etc/osctl/configsets/
+[Set OpenSim.ini]                 ; edits to a file before its includes are followed: Section|Key = value
+    Architecture|Include-Architecture = config-include/StandaloneHypergrid.ini
+```
+
+`[Set …]` exists because an override cannot undo an include that has already been followed. Each standalone
+instance is a grid of its own (`standalone-<instance>`). Downloads are cached in `/var/lib/osctl/configsets/<set>/`;
+`osctl configset fetch` refreshes them (`instance add` fetches them the first time), and a download that does not
+read as an ini file never replaces the cached copy. `osctl configset list|show` show them.
 
 Shipped config sets:
 - `standalone` and `standalone-hg`: OpenSim's own files.
@@ -259,10 +290,16 @@ hard-link files unchanged from the previous release to save space.
 
 ## Databases
 
-- MariaDB: `osctl db init` creates `osctl_admin` (CREATE/DROP on `opensim\_%`) and `opensim` (all on those
-  databases). Each instance gets `opensim_<name>`; the estate database is one per grid (`opensim_estate_<grid>`),
-  not one shared by everything as in MIOS, because standalones and grids must not share estates.
-  `instance delete` drops the instance database (after confirmation; a final dump is taken first).
+- MariaDB: `sudo osctl db init`, once, connects as root over the unix socket (Ubuntu's MariaDB lets the system root
+  in that way), generates the passwords missing from `secrets.ini` (edited in place, comments kept), and creates
+  `osctl_admin` and `opensim`, both with all rights on `opensim\_%` databases only; it warns when
+  `max_allowed_packet` is under 128 MB. A server on another machine: create the two users by hand. `osctl doctor`
+  checks that `osctl_admin` can connect.
+- Each instance gets `opensim_<name>`; the estate database is one per grid (`opensim_estate_<grid>`), not one
+  shared by everything as in MIOS, because standalones and grids must not share estates. `instance add` creates
+  them (utf8mb4) and refuses to start without `db init`. `instance delete` dumps the instance's database (and a
+  standalone's own estate database) with `mariadb-dump` to `/var/lib/osctl/deleted/<name>-<time>/` and drops them
+  (`--keep-database` leaves them). The dump's password goes in a temporary 0600 file, not on the command line.
 - SQLite: OpenSim's `SQLiteStandalone.ini` storage, with file paths redirected to the instance's `data/`.
   Standalone only.
 - Library: MySqlConnector.
