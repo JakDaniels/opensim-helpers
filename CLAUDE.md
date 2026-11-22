@@ -1,0 +1,33 @@
+# osctl – session handoff
+
+Read [PLAN.md](PLAN.md) first: it is the design and holds every decision made so far.
+
+## What this is
+osctl ("MIOS 2.0") manages several OpenSimulator instances on one Ubuntu machine: named OpenSim builds from git,
+instances and regions, layered ini configuration, systemd units with a tmux console per instance, MariaDB/SQLite,
+backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10. It replaces MIOS (PHP), whose
+source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
+
+## Where we are
+- Phase 0 (skeleton) under way: solution `src/Osctl.slnx` (`src/Osctl`, assembly `osctl`; `src/Osctl.Tests`, xUnit).
+  `dotnet test src` runs the tests; `dotnet run --project src/Osctl -- doctor` checks the machine.
+- `Osctl.Ini`: parser and writer that follow Nini's rules (PLAN.md "The ini dialect"), and `IniLoader`, which
+  follows OpenSim's `Include-*` handling. Tests read the real files in an OpenSim `bin/`: `../opensim/bin` next to
+  this repository, or `OSCTL_TEST_OPENSIM_BIN`; skipped when there is none (as in CI).
+- `Osctl.Settings`: paths (`--root`/`OSCTL_ROOT`, default `/`) and `/etc/osctl/osctl.ini` + `secrets.ini`.
+- All external programs run through `IProcessRunner` (fake in tests).
+
+## Reference code (outside this repository)
+- OpenSim source: `../opensim` (ConfigurationLoader.cs, Application.cs for the command-line switches).
+- Nini source: `../opensim-libs/trunk/managed/Nini` (Source/Ini/IniReader.cs, IniDocument.cs).
+- SpatialAudioServer (`../../..`): the CI, packaging and release flow osctl copies.
+
+## Working preferences
+- Commits end with: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Commit only when asked.
+- Day-to-day work on `develop`; merging a pull request develop → main will release (as in SpatialAudioServer).
+- **Every new source file** starts with `Copyright 2026 Simon Annetts/Jak Daniels` and
+  `SPDX-License-Identifier: Apache-2.0` in its comment syntax; C# is enforced by the build (IDE0073).
+- **CHANGELOG.md:** every commit that changes osctl itself (`src/Osctl`) adds one brief line under
+  `## Unreleased`, in the same commit, written for people who run osctl. No entries for CI, packaging, tests,
+  docs or plans.
+- The user wants questions asked when the spec is unclear.

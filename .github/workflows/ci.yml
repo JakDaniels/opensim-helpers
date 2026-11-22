@@ -1,0 +1,54 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# Tests, as in SpatialAudioServer: on pull requests into main or develop, and by hand ("Run workflow" on the
+# Actions page, any branch). Pushes run no CI. The job name `test` is the check the main ruleset requires.
+# The tests that read OpenSim's own ini files are skipped here (no OpenSim tree); set OSCTL_TEST_OPENSIM_BIN
+# to run them.
+name: ci
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Full history: MinVer needs the tags and the commit count for the version.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('src/**/*.csproj', 'src/Directory.Build.props') }}
+          restore-keys: nuget-
+
+      - name: Build
+        run: dotnet build src
+
+      - name: Version
+        run: src/Osctl/bin/Debug/net10.0/osctl --version
+
+      - name: Test
+        run: >
+          dotnet test src --no-build
+          --blame-hang-timeout 5m --blame-hang-dump-type none
+          --logger "console;verbosity=normal"

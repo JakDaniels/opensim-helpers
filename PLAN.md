@@ -164,8 +164,31 @@ The `Include-*`, `[Architecture]` and `[Includes]` keys are removed from the res
 Values stay raw so OpenSim still expands `${Const|…}`. Regions: `region-defaults.ini`, then
 `regions/Regions.ini`, then the per-region module files, written to `generated/Regions/Regions.ini`.
 
-The ini reader/writer must match Nini's behaviour (quotes, `;` comments, duplicate keys, sections that repeat,
-keys case) closely; it gets its own test suite built from the real files in OpenSim's `bin/`.
+Step 2 is loaded the way OpenSim loads it (with its includes, below), and the override files of steps 3 and 4 are
+merged on top of that result. Overrides are plain files: an `Include-*` key in one is reported, not followed.
+
+### The ini dialect
+
+osctl reads and writes ini files the way Nini does, because Nini is what OpenSim uses (checked in opensim-libs
+`Nini/Source/Ini/IniReader.cs`, `IniDocument.cs`, `Config/ConfigCollection.cs`, and OpenSim's
+`ConfigurationLoader.cs`; `src/Osctl/Ini/` follows them, with tests):
+
+- `;` starts a comment, at the start of a line or after an unquoted value. `#` is **not** a comment: a line
+  starting with `#` is an error ("expected assignment operator").
+- A value whose first character is `"` runs to the next `"`, exactly (spaces and `;` kept); the rest of the line
+  is ignored. An unquoted value ends at `;`, at a `"`, or at the end of the line, and loses trailing spaces. So a
+  value can never contain `"` or a line break; the writer refuses such values rather than write something OpenSim
+  would read differently.
+- Section and key names are case-sensitive.
+- Within one file, a repeated key keeps its **first** value, and a repeated `[Section]` **replaces** the earlier
+  one completely (it does not add to it).
+- Between files (merging), later files win key by key; new sections and keys are added at the end.
+- Includes: after each file is merged, every `Include-*` key in the merged result so far is looked at, and the
+  files it names that are not on the list yet go to the **end** of the list. So included files load after all the
+  files given on the command line. Paths are relative to `bin/`; `*` and `?` work in any path part (osctl sorts the
+  matches, where OpenSim takes file system order); a non-wildcard include that matches nothing is only a warning.
+  http includes (which OpenSim reads as XML) are not supported.
+- OpenSim expands `${Section|Key}` itself after loading, so osctl leaves those untouched.
 
 ## Config sets and grids
 

@@ -1,0 +1,13 @@
+root = true
+
+# Every C# file starts with the copyright and licence header; the build fails without it (IDE0073 as a warning,
+# TreatWarningsAsErrors and EnforceCodeStyleInBuild in src/Directory.Build.props). Other source files (scripts, ini
+# templates, HTML) carry the same two lines in their own comment syntax, by hand.
+[*.cs]
+file_header_template = Copyright 2026 Simon Annetts/Jak Daniels\nSPDX-License-Identifier: Apache-2.0
+dotnet_diagnostic.IDE0073.severity = warning
+
+[*.{cs,csproj,props,yml,ini,md}]
+indent_style = space
+end_of_line = lf
+insert_final_newline = true
