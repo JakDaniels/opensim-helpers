@@ -13,8 +13,10 @@ using Osctl.Setup;
 namespace Osctl.Cli;
 
 /// <summary>What commands need from outside: the process runner and where output goes (fakes in tests).</summary>
-public sealed record CliEnvironment(IProcessRunner Runner, TextWriter Out, TextWriter Error)
+public sealed record CliEnvironment(IProcessRunner Runner, TextWriter Out, TextWriter Error, TimeProvider? Time = null)
 {
+    public TimeProvider Clock => Time ?? TimeProvider.System;
+
     public static CliEnvironment Console() => new(new ProcessRunner(), System.Console.Out, System.Console.Error);
 }
 
@@ -58,18 +60,8 @@ public static class CliApp
         var root = new RootCommand("osctl: manage OpenSimulator instances (MIOS 2.0)") { globals.Root, globals.DryRun };
         root.Add(InitCommand(env, globals));
         root.Add(DoctorCommand(env, globals));
+        root.Add(BuildCommands.Create(env, globals));
         return root;
-    }
-
-    /// <summary>Options every command takes, and what follows from them.</summary>
-    private sealed record GlobalOptions(Option<string?> Root, Option<bool> DryRun)
-    {
-        public OsctlPaths Paths(ParseResult parse) => OsctlPaths.Resolve(parse.GetValue(Root));
-
-        public bool IsDryRun(ParseResult parse) => parse.GetValue(DryRun);
-
-        public IProcessRunner Runner(ParseResult parse, CliEnvironment env) =>
-            IsDryRun(parse) ? new DryRunProcessRunner(env.Runner, env.Out) : env.Runner;
     }
 
     private static Command InitCommand(CliEnvironment env, GlobalOptions globals)
@@ -124,7 +116,7 @@ public static class CliApp
     /// Sets a command's action so that the errors osctl expects (bad settings, unreadable files, refused
     /// values) end as one line on stderr and exit code 2, instead of a stack trace.
     /// </summary>
-    private static void SetAction(Command command, CliEnvironment env, Func<ParseResult, CancellationToken, Task<int>> action) =>
+    internal static void SetAction(Command command, CliEnvironment env, Func<ParseResult, CancellationToken, Task<int>> action) =>
         command.SetAction(async (parse, ct) =>
         {
             try
@@ -153,4 +145,15 @@ public static class CliApp
         CheckStatus.Warning => "[WARN]",
         _ => "[FAIL]",
     };
+}
+
+/// <summary>Options every command takes, and what follows from them.</summary>
+internal sealed record GlobalOptions(Option<string?> Root, Option<bool> DryRun)
+{
+    public OsctlPaths Paths(ParseResult parse) => OsctlPaths.Resolve(parse.GetValue(Root));
+
+    public bool IsDryRun(ParseResult parse) => parse.GetValue(DryRun);
+
+    public IProcessRunner Runner(ParseResult parse, CliEnvironment env) =>
+        IsDryRun(parse) ? new DryRunProcessRunner(env.Runner, env.Out) : env.Runner;
 }

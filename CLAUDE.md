@@ -9,7 +9,10 @@ backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10
 source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
 
 ## Where we are
-- Phase 0 (skeleton) done, apart from CI's first run; next is phase 1 (builds). Solution `src/Osctl.slnx` (`src/Osctl`, assembly `osctl`; `src/Osctl.Tests`, xUnit).
+- Phase 1 (builds) done: `osctl build …` (`src/Osctl/Builds/`, PLAN.md "Builds"); tried for real with OpenSim
+  master + os-webrtc-sas and its core patch. Next is phase 2 (instances, regions, config generation).
+  Build tests use real git on local repositories with a fake compile script (`Osctl.Tests/Builds/BuildFixture.cs`).
+- Phase 0 (skeleton) done, apart from CI's first run. Solution `src/Osctl.slnx` (`src/Osctl`, assembly `osctl`; `src/Osctl.Tests`, xUnit).
   `dotnet test src` runs the tests; `dotnet run --project src/Osctl -- doctor` checks the machine.
 - `Osctl.Ini`: parser and writer that follow Nini's rules (PLAN.md "The ini dialect"), and `IniLoader`, which
   follows OpenSim's `Include-*` handling. Tests read the real files in an OpenSim `bin/`: `../opensim/bin` next to

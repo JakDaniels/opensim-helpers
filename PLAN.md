@@ -164,7 +164,8 @@ For each start (and for `osctl config show`), in order, later wins:
 5. Forced settings: PID file, console history, `regionload_regionsdir`, startup/shutdown command files,
    `ScriptEnginesPath` (XEngine and YEngine), `http_listener_port`/SSL port, asset cache dir, database connection
    strings (MariaDB, or SQLite paths under `data/`), estate defaults, RemoteAdmin (enabled, localhost only,
-   generated password), `ManagedStatsRemoteFetchURI`.
+   generated password), `ManagedStatsRemoteFetchURI`, and `[Startup] RegistryLocation` (OpenSim otherwise writes
+   its Mono.Addins registry into the working directory, which is the shared release `bin/`).
 
 The `Include-*`, `[Architecture]` and `[Includes]` keys are removed from the result (they have been applied).
 Values stay raw so OpenSim still expands `${Const|…}`. Regions: `region-defaults.ini`, then
@@ -218,11 +219,43 @@ Grid details change, so shipped grid config sets are data files that can be upda
 
 ## Builds
 
-`osctl build update <b>`: fetch, check out the ref, copy or clone the addon modules into `addon-modules/`, apply
-patches (`git apply`), `./runprebuild.sh`, `dotnet build -c Release OpenSim.sln`, copy `bin/` into a new release
-directory, run a smoke check (the DLLs load), switch `current`. Instances use the new release at their next
-(re)start; `osctl build update --restart` restarts the instances on that build. Keep the last N releases
-(`osctl build rollback`). Example: build `sas-dev` = OpenSim master + `os-webrtc-sas` addon + its `core-patches/`.
+A build is defined in `/etc/osctl/builds/<name>.ini` (`osctl build add`, `osctl build addon add`, or by hand):
+`[Build]` has `Repository`, `Ref` (branch, tag or commit; `HEAD` = the repository's default branch),
+`Patches` (optional directory of `*.patch`, relative to `/etc/osctl/builds`), `KeepReleases` (3), `Prebuild`
+(`sh runprebuild.sh`) and `Compile` (`dotnet build -c Release OpenSim.sln`); each `[Addon <name>]` has
+`Repository`, `Ref` and `Patches` (a directory in the addon, such as os-webrtc-sas's `core-patches`). The commands
+are settable for forks that build differently (and so the tests can use a fake build).
+
+`osctl build update [<b>…] [--force] [--verbose]`, holding a lock on the build (`.lock`, flock):
+
+1. Clone or fetch the source into `builds/<b>/src` and each addon into `builds/<b>/addons/<a>` (`--prune --tags
+   --force`, and `remote set-head --auto` so `HEAD` follows a changed default branch).
+2. Resolve the refs (`origin/<ref>`, then a tag, then a commit) and work out the fingerprint: the commits, the
+   SHA-256 of every patch, and the two commands. If it matches the current release's, the build is up to date and
+   nothing is built (`--force` builds anyway).
+3. Check out with `checkout --force --detach` and `clean -fdx` (osctl owns these clones), copy each addon into
+   `addon-modules/<a>` without its `.git`, apply the patches (the addons' first, in addon order, then the build's;
+   each directory sorted by name; `git apply --check` first, so a patch that no longer applies stops the update
+   with a clear message).
+4. Run the prebuild and compile commands (`sh -c`, telemetry off), all output to `logs/<release>.log`; on failure
+   the last 30 lines are shown.
+5. Check `bin/` has `OpenSim.dll`, `OpenSim.runtimeconfig.json` and `Robust.dll`, copy it to
+   `releases/<release>.partial/bin` with `release.ini` (repository, ref, commit and subject, addon commits, patch
+   hashes, commands, osctl version), rename to `releases/<release>`, and switch `current` with one `rename(2)`.
+6. Prune: keep the newest `KeepReleases` and always the current one.
+
+Release names are `yyyyMMdd-HHmmss-<commit>` (UTC), so they sort by age. Nothing instances use changes until the
+switch, and a failure leaves the current release as it was. Instances use the new release at their next
+(re)start; `osctl build update --restart` (phase 3) restarts the instances on that build.
+`osctl build rollback <b> [--to <release>]` switches `current` back; `osctl build list|show` show the releases;
+`osctl build remove <b> --yes` removes everything.
+
+Tried for real: build `sas-dev` = OpenSim master + `os-webrtc-sas` (its `core-patches/` applied), 1 min 42 s;
+an update with nothing new takes 0.3 s. A release's `bin/` is about 90 MB and the source tree about 490 MB.
+
+Still to do in later phases: pruning must also keep releases that running instances use (phase 3); builds run
+as the `opensim` user with group-writable directories when osctl is installed (phase 4); releases could
+hard-link files unchanged from the previous release to save space.
 
 ## Databases
 

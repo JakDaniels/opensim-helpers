@@ -19,10 +19,13 @@ public sealed record ProcessResult(int ExitCode, string StandardOutput, string S
 /// How to run a command. <see cref="ChangesSystem"/>: the command changes something (builds, starts, writes);
 /// under <c>--dry-run</c> such commands are printed instead of run, while queries still run.
 /// </summary>
+/// <see cref="OutputLine"/>: when set, each line of output (stdout and stderr, as they come) is passed to it
+/// instead of being collected, for long outputs such as builds.
 public sealed record ProcessRunOptions(
     bool ChangesSystem = false,
     string? WorkingDirectory = null,
-    IReadOnlyDictionary<string, string>? Environment = null)
+    IReadOnlyDictionary<string, string>? Environment = null,
+    Action<string>? OutputLine = null)
 {
     public static ProcessRunOptions Query { get; } = new();
 
@@ -83,6 +86,9 @@ public sealed class ProcessRunner : IProcessRunner
         using (process)
         {
             process.StandardInput.Close();
+            if (options.OutputLine is { } sink)
+                return await StreamAsync(process, sink, cancellationToken);
+
             var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var error = process.StandardError.ReadToEndAsync(cancellationToken);
             try
@@ -96,6 +102,31 @@ public sealed class ProcessRunner : IProcessRunner
             }
             return new ProcessResult(process.ExitCode, await output, await error);
         }
+    }
+
+    private static async Task<ProcessResult> StreamAsync(Process process, Action<string> sink, CancellationToken cancellationToken)
+    {
+        var gate = new object();
+
+        async Task Pump(StreamReader reader)
+        {
+            while (await reader.ReadLineAsync(cancellationToken) is { } line)
+            {
+                lock (gate)
+                    sink(line);
+            }
+        }
+
+        try
+        {
+            await Task.WhenAll(Pump(process.StandardOutput), Pump(process.StandardError), process.WaitForExitAsync(cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            throw;
+        }
+        return new ProcessResult(process.ExitCode, "", "");
     }
 }
 

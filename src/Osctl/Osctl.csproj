@@ -4,6 +4,8 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>osctl</AssemblyName>
     <RootNamespace>Osctl</RootNamespace>
+    <!-- LibraryImport (Util/Posix.cs) generates unsafe marshalling code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
