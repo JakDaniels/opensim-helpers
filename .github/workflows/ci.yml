@@ -31,6 +31,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The tests that run instances use real tmux (with a fake OpenSim).
+      - name: tmux
+        run: sudo apt-get install -y tmux && tmux -V
+
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'

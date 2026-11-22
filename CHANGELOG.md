@@ -24,3 +24,9 @@ the Unreleased section into the release notes.
   nothing an instance writes goes into the shared build.
 - osctl: `sudo osctl db init` sets up MariaDB for osctl; instances get their own databases, dumped before they are
   dropped; `osctl doctor` checks the database connection.
+- osctl: `osctl start|stop|restart|status|enable|disable|console|cmd|logs`: instances run under systemd (or
+  directly, `[Supervisor] Mode`), each with its OpenSim console in tmux; ready when every region says LOGINS
+  ENABLED; stopped through RemoteAdmin; restarted after a crash and shown as broken after repeated quick crashes.
+- osctl: `osctl units install [--user]` writes the systemd unit; `osctl run|run-stop` are what it runs.
+- osctl: `osctl build update --restart` restarts the instances on a build that got a new release; releases that
+  running instances use are never pruned.

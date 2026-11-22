@@ -147,11 +147,23 @@ public sealed class BuildUpdater(
         }
 
         store.SetCurrent(def.Name, release);
-        var pruned = store.Prune(def.Name, def.KeepReleases);
+        var pruned = store.Prune(def.Name, def.KeepReleases, ReleasesInUse(def.Name));
         await progress.WriteLineAsync($"Release {release} of build '{def.Name}' is now current.");
         foreach (var old in pruned)
             await progress.WriteLineAsync($"    removed old release {old}");
         return new BuildUpdateResult(BuildUpdateOutcome.Built, release, pruned);
+    }
+
+    /// <summary>The releases of a build that running instances started from (their run state says which).</summary>
+    private IEnumerable<string> ReleasesInUse(string build)
+    {
+        var instances = new Instances.InstanceStore(paths);
+        foreach (var name in instances.Names())
+        {
+            if (Running.RunState.Load(instances.RunStateFile(name)) is { IsRunnerAlive: true } run
+                && instances.Load(name).Build == build)
+                yield return run.Release;
+        }
     }
 
     private sealed record PatchFile(string Path, AppliedPatch Applied);

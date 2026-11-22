@@ -52,6 +52,24 @@ public sealed class InstanceStore(OsctlPaths paths)
 
     public string PidFile(string name) => Path.Combine(paths.Run, name + ".pid");
 
+    /// <summary>
+    /// The instance's tmux socket: /run/osctl/&lt;name&gt;.sock. A unix socket path must fit in 107 bytes, so under a
+    /// long development root it goes to a short directory in /tmp instead, named after the root.
+    /// </summary>
+    public string TmuxSocket(string name)
+    {
+        var socket = Path.Combine(paths.Run, name + ".sock");
+        if (socket.Length <= 100)
+            return socket;
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(paths.Root)))[..12];
+        return Path.Combine(Path.GetTempPath(), $"osctl-{hash}", name + ".sock");
+    }
+
+    public string ConsoleLog(string name) => Path.Combine(LogDir(name), "console.log");
+
+    /// <summary>Written by 'osctl run' while the instance runs: the runner's PID, the release, and when it became ready.</summary>
+    public string RunStateFile(string name) => Path.Combine(paths.Run, name + ".state");
+
     public bool Exists(string name) => Osctl.Names.IsValidInstance(name) && File.Exists(DefinitionFile(name));
 
     public IReadOnlyList<string> Names() =>

@@ -38,9 +38,18 @@ internal sealed class FakeRunner : IProcessRunner
 
     public List<string> Calls { get; } = [];
 
+    private readonly List<(string Prefix, ProcessResult Result)> prefixes = [];
+
     public FakeRunner Answer(string commandLine, string output, int exitCode = 0)
     {
         answers[commandLine] = new ProcessResult(exitCode, output, "");
+        return this;
+    }
+
+    /// <summary>Answers any command line starting with <paramref name="prefix"/> (when no exact answer matches).</summary>
+    public FakeRunner AnswerPrefix(string prefix, string output, int exitCode = 0)
+    {
+        prefixes.Add((prefix, new ProcessResult(exitCode, output, "")));
         return this;
     }
 
@@ -55,7 +64,10 @@ internal sealed class FakeRunner : IProcessRunner
         var line = string.Join(' ', [program, .. arguments]);
         Calls.Add(line);
         Options.Add(options);
-        return Task.FromResult(answers.TryGetValue(line, out var result) ? result : ProcessResult.Missing(program));
+        if (answers.TryGetValue(line, out var result))
+            return Task.FromResult(result);
+        var prefixed = prefixes.FirstOrDefault(p => line.StartsWith(p.Prefix, StringComparison.Ordinal));
+        return Task.FromResult(prefixed.Result ?? ProcessResult.Missing(program));
     }
 }
 

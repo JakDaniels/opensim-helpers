@@ -159,7 +159,8 @@ internal static class BuildCommands
         var names = new Argument<string[]>("names") { Description = "The builds to update (default: all)", Arity = ArgumentArity.ZeroOrMore };
         var force = new Option<bool>("--force") { Description = "Build a new release even if nothing has changed" };
         var verbose = new Option<bool>("--verbose") { Description = "Show the prebuild and compiler output as well as logging it" };
-        var command = new Command("update", "Fetch and build new releases; instances use them from their next start") { names, force, verbose };
+        var restart = new Option<bool>("--restart") { Description = "Restart the running instances on a build that got a new release" };
+        var command = new Command("update", "Fetch and build new releases; instances use them from their next start") { names, force, verbose, restart };
         CliApp.SetAction(command, env, async (parse, ct) =>
         {
             var paths = globals.Paths(parse);
@@ -170,9 +171,34 @@ internal static class BuildCommands
 
             var updater = new BuildUpdater(globals.Runner(parse, env), paths, env.Out, env.Clock,
                 globals.IsDryRun(parse), parse.GetValue(verbose));
+            var instances = new Instances.InstanceStore(paths);
+            var failures = 0;
             foreach (var buildName in selected)
-                await updater.UpdateAsync(store.Load(buildName), parse.GetValue(force), ct);
-            return 0;
+            {
+                var result = await updater.UpdateAsync(store.Load(buildName), parse.GetValue(force), ct);
+                if (!parse.GetValue(restart) || result.Outcome != BuildUpdateOutcome.Built)
+                    continue;
+
+                var supervisor = RunCommands.Supervisor(env, globals, parse);
+                foreach (var name in instances.Names().Where(n => instances.Load(n).Build == buildName))
+                {
+                    if ((await supervisor.StatusAsync(name, ct)).State is not (Running.InstanceState.Running or Running.InstanceState.Starting))
+                        continue;
+                    await env.Out.WriteAsync($"Restarting {name} on release {result.Release} … ");
+                    try
+                    {
+                        await supervisor.RestartAsync(name, ct);
+                        await env.Out.WriteLineAsync("restarted");
+                    }
+                    catch (OsctlException e)
+                    {
+                        failures++;
+                        await env.Out.WriteLineAsync("FAILED");
+                        await env.Error.WriteLineAsync($"osctl: {e.Message}");
+                    }
+                }
+            }
+            return failures == 0 ? 0 : CliApp.ExitFailure;
         });
         return command;
     }

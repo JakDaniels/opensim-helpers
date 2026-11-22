@@ -39,6 +39,26 @@ public sealed record DatabaseSettings(
 /// <summary>What new instances get when the command line does not say (MIOS: DEFAULT_CONFIG_SET).</summary>
 public sealed record DefaultSettings(string ConfigSet = "standalone", string? Build = null);
 
+/// <summary>
+/// How instances are run (PLAN.md "Running instances"): <c>systemd</c> (system units, as the package installs them),
+/// <c>systemd-user</c> (the user's own units, from <c>osctl units install --user</c>), or <c>direct</c> (no systemd:
+/// osctl starts the runner itself, with no restart after a crash; for development and tests).
+/// </summary>
+public enum SupervisorMode
+{
+    Systemd,
+    SystemdUser,
+    Direct,
+}
+
+public sealed record SupervisorSettings(SupervisorMode Mode = SupervisorMode.Systemd);
+
+/// <summary>
+/// The command an instance runs in its release's bin/, before osctl's own arguments (-inifile and so on).
+/// Settable for forks; the tests use a fake OpenSim.
+/// </summary>
+public sealed record RunSettings(string Command = "dotnet OpenSim.dll");
+
 /// <summary>The system account and group that run the instances.</summary>
 public sealed record AccountSettings(string User = "opensim", string Group = "opensim");
 
@@ -50,9 +70,11 @@ public sealed record OsctlSettings(
     TmuxSettings Tmux,
     DatabaseSettings Database,
     DefaultSettings Defaults,
-    AccountSettings Account)
+    AccountSettings Account,
+    SupervisorSettings Supervisor,
+    RunSettings Run)
 {
-    public static OsctlSettings Default { get; } = new(new(), new(), new(), new(), new(), new(), new());
+    public static OsctlSettings Default { get; } = new(new(), new(), new(), new(), new(), new(), new(), new(), new());
 }
 
 /// <summary>The settings, plus what was odd about the files (unknown keys, missing files).</summary>
@@ -109,13 +131,23 @@ public static class SettingsLoader
             s.String("Account", "User", d.Account.User),
             s.String("Account", "Group", d.Account.Group));
 
+        var modeText = s.String("Supervisor", "Mode", "systemd");
+        var supervisor = new SupervisorSettings(modeText.ToLowerInvariant() switch
+        {
+            "systemd" => SupervisorMode.Systemd,
+            "systemd-user" => SupervisorMode.SystemdUser,
+            "direct" => SupervisorMode.Direct,
+            _ => throw new SettingsException($"{paths.SettingsFile}: [Supervisor] Mode = {modeText}: expected systemd, systemd-user or direct"),
+        });
+        var run = new RunSettings(s.String("Run", "Command", d.Run.Command));
+
         if (settingsDoc.Get("Database", "AdminPassword") is not null || settingsDoc.Get("Database", "Password") is not null)
             warnings.Add($"{paths.SettingsFile}: database passwords belong in {paths.SecretsFile}; they are ignored here");
 
         s.WarnAboutUnknownKeys(paths.SettingsFile);
         secrets.WarnAboutUnknownKeys(paths.SecretsFile);
 
-        return new SettingsLoadResult(new OsctlSettings(ports, timeouts, restart, tmux, database, defaults, account), found, warnings);
+        return new SettingsLoadResult(new OsctlSettings(ports, timeouts, restart, tmux, database, defaults, account, supervisor, run), found, warnings);
     }
 
     /// <summary>Reads typed values and remembers which keys were used, so typos can be reported.</summary>

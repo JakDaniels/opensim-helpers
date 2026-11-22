@@ -129,21 +129,41 @@ StartLimitIntervalSec=300
 StartLimitBurst=3        # MIOS's "broken" rule, values from osctl.ini
 ```
 
+`[Supervisor] Mode` in osctl.ini chooses how: `systemd` (system units, from the package), `systemd-user` (your
+own units: `osctl units install --user` writes them with `--root`, so a development root can be tried under real
+systemd), or `direct` (no systemd: `osctl start` runs `osctl run` in the background with `setsid`; no restart after
+a crash, nothing at boot; for development and the tests). `osctl units install|show` writes or prints the unit;
+it carries the [Restart] and [Timeouts] values, so it is installed again after they change.
+
 `osctl run <name>`:
-1. Regenerates the instance's configuration (below) and checks it (ports free, DB reachable).
-2. Starts a tmux server just for this instance (`tmux -S /run/osctl/<name>.sock`, `remain-on-exit on`) running
+1. Regenerates the instance's configuration (below) and checks it (regions exist, ports free).
+2. Starts a tmux server just for this instance (`tmux -S /run/osctl/<name>.sock`, `remain-on-exit on`; under a
+   long development root the socket goes to `/tmp/osctl-<hash>/`, as socket paths must fit in 107 bytes) running
    `dotnet OpenSim.dll -inimaster=none -inifile=generated/OpenSim.ini -inidirectory=generated/config -logconfig=generated/log4net.config`
    (`none` skips OpenSim's own master file; the empty `config/` stops OpenSim merging any `bin/config/*.ini`;
    tried by hand in phase 2: a SQLite standalone with two regions started unattended and shut down with exit code 0)
    in the build's `current/bin`. The tmux server stays in the unit's cgroup, so systemd sees and kills everything.
-3. Waits for readiness, then sends `READY=1`. "LOGINS ENABLED" goes to the console only (the tmux pane), not the
-   log; the log has `[RegionReady]: Enabled for region <name>` per region, and `/simstatus/` answers on the
-   instance port. Which to use is settled in phase 3.
+   The pane first runs `sh -c 'read -r _ && exec "$@"'`: osctl attaches `pipe-pane` (the console transcript,
+   `/var/log/osctl/<name>/console.log`, the previous one kept as `.1`) and then presses Enter, so the transcript
+   has OpenSim from its first line and the pane's PID is OpenSim's. OpenSim runs from the release directory itself,
+   not `current/`, and the release is recorded in `/run/osctl/<name>.state` so pruning keeps it.
+3. Waits for readiness: every region's `INITIALIZATION COMPLETE FOR <region> - LOGINS ENABLED` in the console
+   transcript (RegionReady prints it only to the console, once scripts have compiled; `/simstatus/` answers
+   earlier). If [Timeouts] StartSeconds pass first, it logs a warning and carries on as ready. Then `READY=1`.
 4. Waits for the OpenSim process to exit and exits with its exit code. A `shutdown` typed on the console exits 0
    and the unit stays stopped; a crash exits non-zero and systemd restarts it.
 
-`osctl run-stop` sends `shutdown` (RemoteAdmin `admin_shutdown`, falling back to tmux `send-keys`) and waits;
-systemd kills after `TimeoutStopSec`. `--force` on `osctl stop` kills straight away.
+`osctl run-stop` sends `shutdown` (RemoteAdmin `admin_shutdown`, falling back to tmux `send-keys`) and waits up
+to [Timeouts] StopSeconds, then kills OpenSim (SIGTERM, then SIGKILL); systemd kills after `TimeoutStopSec`. The
+runner does the same on SIGTERM. `--force` on `osctl stop` kills straight away.
+
+"Broken": with `Restart=on-failure`, a unit that stays failed after restarts is one systemd gave up on ("Start
+request repeated too quickly"; systemd 259 leaves `Result` at the last exit code, not `start-limit-hit`).
+`osctl status` shows it as broken; `osctl start` resets it (`reset-failed`) and starts it again.
+
+Tried on this machine under systemd user units (phase 3): start (ready in ~5 s), crash (SIGKILL) restarted after
+10 s, four quick crashes gave broken, `osctl start` recovered it, `osctl stop` through RemoteAdmin left it
+inactive with success, `shutdown` typed at the console left it stopped (exit 0, no restart), enable/disable.
 
 Permissions: members of group `opensim` run osctl without sudo. The package ships a polkit rule letting that group
 manage `osctl@*.service` and the osctl timers. Each instance's tmux socket (`/run/osctl/<name>.sock`) is mode 0660

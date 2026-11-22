@@ -10,6 +10,7 @@ using Osctl.Doctor;
 using Osctl.Ini;
 using Osctl.Instances;
 using Osctl.Processes;
+using Osctl.Running;
 using Osctl.Settings;
 using Osctl.Setup;
 
@@ -23,9 +24,16 @@ public sealed record CliEnvironment(
     TimeProvider? Time = null,
     IDownloader? Downloader = null,
     IPortProbe? Ports = null,
-    IDatabaseFactory? Databases = null)
+    IDatabaseFactory? Databases = null,
+    IRemoteAdmin? RemoteAdmin = null,
+    IReadOnlyList<string>? OsctlCommand = null)
 {
     public IDatabaseFactory DatabaseFactory => Databases ?? new MySqlDatabaseFactory(Runner);
+
+    public IRemoteAdmin Admin => RemoteAdmin ?? new HttpRemoteAdmin();
+
+    /// <summary>How to run osctl again (the direct supervisor starts 'osctl run' this way).</summary>
+    public IReadOnlyList<string> Self => OsctlCommand ?? Units.Self();
 
     public TimeProvider Clock => Time ?? TimeProvider.System;
 
@@ -83,6 +91,8 @@ public static class CliApp
         root.Add(InstanceCommands.List(env, globals));
         root.Add(ConfigCommands.Create(env, globals));
         root.Add(DbCommands.Create(env, globals));
+        foreach (var command in RunCommands.Create(env, globals))
+            root.Add(command);
         return root;
     }
 

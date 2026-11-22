@@ -108,15 +108,17 @@ public sealed class BuildStore(OsctlPaths paths)
     }
 
     /// <summary>
-    /// Removes the oldest releases beyond <paramref name="keep"/>, never the current one. Returns what was removed.
+    /// Removes the oldest releases beyond <paramref name="keep"/>, never the current one nor any in
+    /// <paramref name="inUse"/> (releases running instances started from). Returns what was removed.
     /// </summary>
-    public IReadOnlyList<string> Prune(string build, int keep)
+    public IReadOnlyList<string> Prune(string build, int keep, IEnumerable<string>? inUse = null)
     {
         var current = Current(build);
         var releases = Releases(build);
         var keepSet = releases.TakeLast(keep).ToHashSet();
         if (current is not null)
             keepSet.Add(current);
+        keepSet.UnionWith(inUse ?? []);
 
         var removed = new List<string>();
         foreach (var release in releases.Where(r => !keepSet.Contains(r)))
