@@ -1,0 +1,68 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# The osctl package (PLAN.md "Packaging"). Built by scripts/build-packages.sh from the repository root, which sets
+# VERSION (SemVer from MinVer: nfpm writes pre-releases as 0.1.1~alpha.0.5 for deb) and ARCH.
+name: osctl
+version: ${VERSION}
+version_schema: semver
+arch: ${ARCH}
+platform: linux
+section: admin
+priority: optional
+maintainer: osctl developers
+description: |
+  Manage several OpenSimulator instances on one machine (MIOS 2.0)
+  Builds OpenSim from git as named builds, creates instances and regions,
+  generates each instance's configuration from layered ini files, and runs the
+  instances under systemd with a tmux console each; MariaDB or SQLite.
+homepage: https://github.com/JakDaniels/opensimtools
+license: Apache-2.0
+
+depends:
+  - tmux (>= 3.3)
+  - git
+  - libc6
+  - libgcc-s1
+  - libstdc++6
+recommends:
+  - systemd
+  - polkitd | policykit-1
+  # OpenSim builds and runs on .NET 8 (not part of every Ubuntu release's archive: see 'osctl doctor').
+  - dotnet-sdk-8.0
+  - libgdiplus
+  - mariadb-client
+suggests:
+  - mariadb-server
+
+contents:
+  # The program: a self-contained single-file .NET publish (runtime included).
+  - src: dist/stage/osctl
+    dst: /usr/bin/osctl
+    file_info: { mode: 0755 }
+  - src: dist/stage/osctl@.service
+    dst: /usr/lib/systemd/system/osctl@.service
+    file_info: { mode: 0644 }
+  - src: packaging/linux/osctl.tmpfiles
+    dst: /usr/lib/tmpfiles.d/osctl.conf
+    file_info: { mode: 0644 }
+  - src: packaging/linux/50-osctl.rules
+    dst: /usr/share/polkit-1/rules.d/50-osctl.rules
+    file_info: { mode: 0644 }
+  - src: README.md
+    dst: /usr/share/doc/osctl/README.md
+    file_info: { mode: 0644 }
+  - src: PLAN.md
+    dst: /usr/share/doc/osctl/PLAN.md
+    file_info: { mode: 0644 }
+  - src: dist/stage/CHANGELOG.md
+    dst: /usr/share/doc/osctl/CHANGELOG.md
+    file_info: { mode: 0644 }
+  - src: LICENSE
+    dst: /usr/share/doc/osctl/copyright
+    file_info: { mode: 0644 }
+
+scripts:
+  postinstall: packaging/linux/postinstall.sh
+  preremove: packaging/linux/preremove.sh
+  postremove: packaging/linux/postremove.sh

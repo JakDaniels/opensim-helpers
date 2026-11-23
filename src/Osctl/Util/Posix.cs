@@ -26,6 +26,12 @@ public static partial class Posix
             throw new IOException($"Could not rename {oldPath} to {newPath}: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
     }
 
+    /// <summary>
+    /// umask(2). osctl runs with 007 (PLAN.md "Packaging"): what one member of the opensim group creates, the others
+    /// and the instances (running as opensim) can change; nobody else can read it.
+    /// </summary>
+    public static void SetUmask(int mask) => umask(mask);
+
     /// <summary>Sends a signal; false if the process does not exist (or is not ours).</summary>
     public static bool Kill(int pid, int signal) => pid > 0 && kill(pid, signal) == 0;
 
@@ -79,6 +85,9 @@ public static partial class Posix
 
     [LibraryImport("libc", EntryPoint = "rename", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int rename(string oldPath, string newPath);
+
+    [LibraryImport("libc", EntryPoint = "umask")]
+    private static partial int umask(int mask);
 
     [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
     private static partial int kill(int pid, int signal);

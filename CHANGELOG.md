@@ -30,3 +30,6 @@ the Unreleased section into the release notes.
 - osctl: `osctl units install [--user]` writes the systemd unit; `osctl run|run-stop` are what it runs.
 - osctl: `osctl build update --restart` restarts the instances on a build that got a new release; releases that
   running instances use are never pruned.
+- osctl: a .deb package (x64, arm64) with the systemd unit, the opensim account and group-shared directories, so
+  members of the opensim group manage instances without sudo; osctl runs with umask 007 for that.
+- osctl: `osctl units show --defaults --program PATH` prints the unit for another installation (the package build).

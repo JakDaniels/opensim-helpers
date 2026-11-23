@@ -1,0 +1,43 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# Draft packages for testing, as in SpatialAudioServer: by hand only, from develop. They replace the files of the
+# single pre-release "develop (draft)" (tag develop-draft, moved to the commit built). Pre-release versions only
+# (0.1.1~alpha.0.N), so a draft is never mistaken for a release and the real one upgrades it cleanly.
+name: drafts
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: Install and try the x64 package on each distribution (about 2 minutes each)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # the develop (draft) release and its tag
+
+concurrency:
+  group: drafts
+  cancel-in-progress: false
+
+jobs:
+  # "Run workflow" offers the default branch (main) first: a run started anywhere but develop fails here, visibly.
+  branch:
+    if: github.ref != 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Drafts are built from develop
+        run: |
+          echo "::error::Run drafts on develop: choose it under \"Use workflow from\" (this run was started on ${GITHUB_REF_NAME})."
+          exit 1
+
+  packages:
+    if: github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/packages.yml
+    with:
+      kind: develop-draft
+      tag: develop-draft
+      intro: 'Draft packages for testing, built from `develop` at {sha}: **{version}**. Not a release.'
+      test: ${{ inputs.test }}

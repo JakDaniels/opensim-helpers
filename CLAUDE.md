@@ -9,6 +9,12 @@ backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10
 source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
 
 ## Where we are
+- Phase 4 (packaging) under way: `packaging/linux/` (nfpm.yaml, install scripts, tmpfiles, polkit rule),
+  `scripts/build-packages.sh` (needs nfpm; builds locally), `scripts/test-packages.sh` (CI containers only: no
+  Docker here), workflows `packages.yml`, `drafts.yml`, `release.yml` (copied from SAS), and the apt repository on this
+  repository's own Pages (`pages.yml`, `scripts/build-repos.sh`, key `packaging/signing-key.asc`). The GitHub
+  repository is to be renamed `JakDaniels/opensimtools` (site https://jakdaniels.github.io/opensimtools/). Not yet
+  run on GitHub.
 - Phase 3 (running) done: `src/Osctl/Running/` (InstanceRunner = `osctl run`, InstanceStopper, Supervisor:
   systemd / systemd-user / direct, Tmux, ConsoleCommand, RemoteAdmin), `Cli/RunCommands.cs`. Tried for real with
   OpenSim in direct mode and under systemd user units (then removed). Tests: `Osctl.Tests/Running/` with real tmux

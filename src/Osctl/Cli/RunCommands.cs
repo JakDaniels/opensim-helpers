@@ -317,12 +317,17 @@ internal static class RunCommands
         });
 
         var showUser = new Option<bool>("--user") { Description = "The user unit" };
-        var show = new Command("show", "Print the unit osctl would install") { showUser };
+        var program = new Option<string?>("--program") { Description = "The osctl the unit runs (default: this one, or /usr/bin/osctl)" };
+        var defaults = new Option<bool>("--defaults") { Description = "Use osctl's built-in settings and root /, not this machine's (the package build)" };
+        var show = new Command("show", "Print the unit osctl would install (the package build writes its unit this way)") { showUser, program, defaults };
         CliApp.SetAction(show, env, async (parse, _) =>
         {
             var isUser = parse.GetValue(showUser);
-            await env.Out.WriteAsync(Units.Template(globals.Settings(parse), globals.Paths(parse), isUser,
-                isUser || !File.Exists("/usr/bin/osctl") ? env.Self : ["/usr/bin/osctl"]));
+            IReadOnlyList<string> self = parse.GetValue(program) is { } given ? [given]
+                : isUser || !File.Exists("/usr/bin/osctl") ? env.Self : ["/usr/bin/osctl"];
+            var builtIn = parse.GetValue(defaults);
+            await env.Out.WriteAsync(Units.Template(builtIn ? OsctlSettings.Default : globals.Settings(parse),
+                builtIn ? new OsctlPaths("/") : globals.Paths(parse), isUser, self));
             return 0;
         });
 

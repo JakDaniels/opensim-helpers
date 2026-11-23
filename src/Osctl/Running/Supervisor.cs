@@ -57,7 +57,7 @@ public static class Units
     {
         var process = Environment.ProcessPath ?? "osctl";
         return Path.GetFileNameWithoutExtension(process) == "dotnet"
-            ? [process, typeof(Units).Assembly.Location]
+            ? [process, Path.Combine(AppContext.BaseDirectory, "osctl.dll")]
             : [process];
     }
 

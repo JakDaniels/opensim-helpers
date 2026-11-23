@@ -23,7 +23,7 @@ what aged badly. It is written in C# on .NET 10.
 | osctl's own config | ini files, in the same dialect as OpenSim's, so one parser serves both. |
 | Region defaults | MIOS's `Regions.ini.example` values become the shipped `region-defaults.ini`. |
 | Grids | OSGrid gets a ready-made config set now; other grids later (the mechanism allows for them); see "Config sets and grids". |
-| CI and releases | Same flow as SpatialAudioServer: work on `develop`, CI on pull requests, merging develop → main releases (next patch version, `minor`/`major` labels), .deb packages served from the same signed apt repository. |
+| CI and releases | Same flow as SpatialAudioServer: work on `develop`, CI on pull requests, merging develop → main releases (next patch version, `minor`/`major` labels). The repository is `JakDaniels/opensimtools` (renamed from opensim-helpers); its own GitHub Pages site, https://jakdaniels.github.io/opensimtools/, is the signed apt repository (its own key), not SpatialAudioServer's. |
 | Platform | Linux only, Ubuntu first (26.04 here; 24.04 should work). |
 | Licence | Apache-2.0 (as the repo). |
 
@@ -346,6 +346,42 @@ minute into SQLite (MIOS's `Stats.ini` definitions are the starting set of serie
 RRAs: 1 min for a day, 5 min for a week, 1 h for 8 weeks, 1 day for 3 years), and serves a page with status and
 graphs (static HTML/JS, no build step). Read-only to begin with.
 
+## Packaging
+
+`scripts/build-packages.sh [x64|arm64]` (nfpm, as in SpatialAudioServer) makes `dist/osctl_<version>_<arch>.deb`:
+
+- `/usr/bin/osctl`: a self-contained single-file .NET publish (runtime inside, invariant globalisation), so no
+  .NET 10 is needed; OpenSim's .NET 8 SDK is only recommended, because not every Ubuntu release's archive has it
+  (26.04's comes from a PPA here). `osctl doctor` says what is missing.
+- `/usr/lib/systemd/system/osctl@.service`, written at build time by `osctl units show --defaults --program
+  /usr/bin/osctl`; `sudo osctl units install` writes `/etc/systemd/system/osctl@.service` (which wins) after
+  [Restart] or [Timeouts] change.
+- `/usr/lib/tmpfiles.d/osctl.conf`: `/run/osctl` 2770 opensim:opensim.
+- `/usr/share/polkit-1/rules.d/50-osctl.rules`: members of the opensim group may start, stop, restart, kill and
+  reset-failed `osctl@<name>.service` without sudo. Enabling at boot is not covered (polkit does not say which unit
+  `manage-unit-files` is for), so `sudo osctl enable <name>`.
+- Depends: tmux (>= 3.3), git. Recommends: systemd, polkitd, dotnet-sdk-8.0, libgdiplus, mariadb-client.
+
+The install script creates the system account `opensim` (group `opensim`, home `/var/lib/osctl`, no login), runs
+`osctl init`, and makes `/etc/osctl`, `/var/lib/osctl`, `/var/cache/osctl` and `/var/log/osctl` group-shared:
+owner opensim:opensim, directories 2770 (setgid, so new files stay in the group), files group-writable;
+`secrets.ini` root:opensim 0640. osctl itself runs with umask 007, so what one member creates the others and the
+instances (running as opensim) can change, and nobody else can read. People who manage instances join the group
+(`sudo usermod -aG opensim <user>`). An upgrade fixes only the top directories (builds are large) and leaves running
+instances alone; removal stops them; purge removes /etc/osctl, /var/lib/osctl, /var/cache/osctl and /var/log/osctl
+(never the MariaDB databases).
+
+CI and releases as in SpatialAudioServer: `ci.yml` (tests, on pull requests), `drafts.yml` (by hand on develop:
+the rolling pre-release "develop (draft)"), `release.yml` (a merged pull request into main tags the next version,
+builds and tests the packages into a draft release, published with the label `publish`; afterwards main is merged
+back into develop and CHANGELOG.md rolls over), all building with `packages.yml`, which also installs and tries the
+x64 package in Ubuntu 24.04, Ubuntu 26.04 and Debian 13 containers (`scripts/test-packages.sh`). The apt repository
+is this repository's GitHub Pages site, https://jakdaniels.github.io/opensimtools/ (`pages.yml`,
+`scripts/build-repos.sh`, as in SpatialAudioServer but .deb only): rebuilt from the latest two published releases
+whenever one is published, signed with the key in `packaging/signing-key.asc` (its own, made 2026-11-23, fingerprint
+866F6A96EA961E4B5CB8C70C243C8C3F505D1D3B, expires 2031-11-22; the private half is the secret
+`OPENSIMTOOLS_SIGNING_KEY`). `release.yml` starts it when it publishes a release.
+
 ## Implementation notes
 
 - .NET 10, one console project `src/Osctl` + `src/Osctl.Tests` (xUnit). Libraries: System.CommandLine,
@@ -358,8 +394,7 @@ graphs (static HTML/JS, no build step). Read-only to begin with.
   into the release notes.
 - CI and releases copied from SpatialAudioServer: `develop` for day-to-day work, a ruleset on `main` (pull request,
   merge commits only, required test check), `ci.yml` on pull requests, `drafts.yml` (by hand) for test packages,
-  `release.yml` on merge to main, `pages.yml` adding the .debs to the existing signed apt repository
-  (jakdaniels.github.io), so `apt install osctl` works next to `spatialaudioserver`.
+  `release.yml` on merge to main, `pages.yml` building the signed apt repository on this repository's Pages.
 
 ## Phases
 
@@ -388,7 +423,4 @@ graphs (static HTML/JS, no build step). Read-only to begin with.
 
 None at the moment. Which further grids get shipped config sets is decided later.
 
-Settled: the apt repository stays in SpatialAudioServer. Its `pages.yml` already pulls acousticmultimixer's latest
-release from that repository; osctl's latest release is added the same way, and osctl's `release.yml` triggers
-SpatialAudioServer's `pages.yml` (`gh workflow run -R JakDaniels/SpatialAudioServer`, which needs a token with
-access to that repository).
+Settled: the apt repository is this repository's own GitHub Pages site (see "Packaging"), not SpatialAudioServer's.
