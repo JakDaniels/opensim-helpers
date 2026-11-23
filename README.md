@@ -5,7 +5,8 @@ Open Simulator control tool (MIOS 2.0).
 osctl manages several [OpenSimulator](http://opensimulator.org) instances on one Ubuntu machine. It replaces
 [MIOS](https://github.com/JakDaniels/MIOS), the old PHP scripts, and is written in C# on .NET 10.
 
-**Status: in development.** Nothing is usable yet. [PLAN.md](PLAN.md) is the design.
+**Status: in development.** Builds, instances, regions, configuration, databases and running under systemd work;
+backups, scheduled restarts, Robust and the stats page are still to come. [PLAN.md](PLAN.md) is the design.
 
 ## What it will do
 
@@ -24,7 +25,14 @@ osctl manages several [OpenSimulator](http://opensimulator.org) instances on one
   in-world warning.
 - **Later:** Robust grid services (run a small grid of your own), and a stats web page with graphs.
 
-## Example (planned)
+## Install
+
+Ubuntu 24.04 or later, Debian 13 or later: the .deb from the
+[Releases page](https://github.com/JakDaniels/opensimtools/releases), or the apt repository at
+https://jakdaniels.github.io/opensimtools/ (`sudo apt install osctl`; the page says how to add it). Then join the `opensim` group
+(`sudo usermod -aG opensim $USER`, and log in again) and run `osctl doctor`. OpenSim needs the .NET 8 SDK.
+
+## Example
 
 ```
 osctl build add master --repo git://opensimulator.org/git/opensim --ref master

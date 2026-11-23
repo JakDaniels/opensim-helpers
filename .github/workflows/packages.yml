@@ -1,0 +1,159 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the .deb packages into a GitHub release, then tries them (PLAN.md "Packaging"), as in SpatialAudioServer.
+# Called by drafts.yml (the rolling pre-release "develop (draft)") and release.yml (a draft release for a version
+# tag), so both build the same way.
+#   linux  osctl .deb, x64 and arm64; makes the release with them and SHA256SUMS
+#   test   the x64 package installed and tried on each distribution, downloaded from that release
+name: packages
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: "develop-draft: replace the rolling pre-release; release: a draft release for the version tag"
+        type: string
+        required: true
+      tag:
+        description: The release's tag (develop-draft, or the version tag such as v0.1.0)
+        type: string
+        required: true
+      version:
+        description: When set, the version the build must have (MinVer, from the tag)
+        type: string
+        default: ''
+      ref:
+        description: What to build (default the commit that started the run; release.yml after a merge passes the tag)
+        type: string
+        default: ''
+      intro:
+        description: The release notes' first part; {version} and {sha} are filled in
+        type: string
+        required: true
+      test:
+        type: boolean
+        default: true
+    outputs:
+      release:
+        description: The release's API address
+        value: ${{ jobs.linux.outputs.release }}
+
+env:
+  NFPM_VERSION: 2.48.0
+  NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      release: ${{ steps.release.outputs.api }}
+    steps:
+      # Full history: MinVer needs the tags and the commit count for the version.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      # The tags as on GitHub, with their messages (the release notes in the package's changelog).
+      - name: Tags
+        run: git fetch --force --tags origin
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: nfpm
+        run: |
+          archive="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSLO "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
+          echo "${NFPM_SHA256}  ${archive}" | sha256sum -c -
+          sudo tar -xzf "${archive}" -C /usr/local/bin nfpm
+          nfpm --version | tail -n 4
+
+      - name: Build the package (x64)
+        run: scripts/build-packages.sh x64
+
+      # Cross-built here: a self-contained .NET publish needs no arm64 machine.
+      - name: Build the package (arm64)
+        run: scripts/build-packages.sh arm64
+
+      - name: Make the release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KIND: ${{ inputs.kind }}
+          TAG: ${{ inputs.tag }}
+          EXPECTED: ${{ inputs.version }}
+          INTRO: ${{ inputs.intro }}
+        run: |
+          cd dist
+          for f in *.deb; do [ "$f" = "${f//\~/-}" ] || mv "$f" "${f//\~/-}"; done # releases have no "~"
+          sha256sum *.deb > SHA256SUMS
+          version="$(ls osctl_*_amd64.deb | sed -E 's/^osctl_(.*)_amd64\.deb$/\1/')"
+          if [ -n "$EXPECTED" ] && [ "$version" != "$EXPECTED" ]; then
+            echo "::error::Built version $version, but the tag says $EXPECTED"
+            exit 1
+          fi
+          intro="${INTRO//\{version\}/$version}"
+          printf '%s\n\n' "${intro//\{sha\}/$(git rev-parse --short=7 HEAD)}" > notes.md
+          cat >> notes.md <<NOTES
+          Ubuntu 24.04 or later, Debian 13 or later; x64 (amd64) or arm64:
+
+              sudo apt install ./osctl_${version}_amd64.deb
+
+          or from the apt repository at https://jakdaniels.github.io/opensimtools/ (\`sudo apt install osctl\`).
+          OpenSim itself needs the .NET 8 SDK (\`osctl doctor\` checks). Check the downloads with
+          \`sha256sum -c SHA256SUMS --ignore-missing\`.
+          NOTES
+          if [ "$KIND" = develop-draft ]; then
+            gh release delete "$TAG" --yes --cleanup-tag || true
+            gh release create "$TAG" --target "$(git rev-parse HEAD)" --prerelease --latest=false \
+              --title "develop (draft)" --notes-file notes.md *.deb SHA256SUMS
+          else
+            if [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null)" = true ]; then
+              gh release delete "$TAG" --yes
+            fi
+            prerelease=""
+            case "$version" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" --verify-tag --draft $prerelease \
+              --title "osctl $version" --notes-file notes.md *.deb SHA256SUMS
+          fi
+          echo "api=$(gh release view "$TAG" --json apiUrl -q .apiUrl)" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: linux
+    if: inputs.test
+    name: test (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'ubuntu:26.04', 'debian:13']
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Download the packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE: ${{ needs.linux.outputs.release }}
+        run: |
+          apt-get update -q && apt-get install -y -q curl ca-certificates
+          mkdir -p packages && cd packages
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$RELEASE" \
+            | grep -o '"url": *"[^"]*/releases/assets/[0-9]*"' | cut -d'"' -f4 \
+            | while read -r url; do
+                curl -fsSLOJ -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" "$url"
+              done
+          sha256sum -c SHA256SUMS
+          ls -l
+
+      - name: Install and try
+        run: sh scripts/test-packages.sh packages

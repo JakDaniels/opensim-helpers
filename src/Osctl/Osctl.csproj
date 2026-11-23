@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>osctl</AssemblyName>
+    <RootNamespace>Osctl</RootNamespace>
+    <!-- LibraryImport (Util/Posix.cs) generates unsafe marshalling code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MySqlConnector" Version="3.0.0" />
+    <PackageReference Include="System.CommandLine" Version="3.0.0" />
+  </ItemGroup>
+
+  <!-- The default files 'osctl init' writes (and the package installs). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Defaults/*" LogicalName="Osctl.Defaults.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Osctl.Tests" />
+  </ItemGroup>
+
+</Project>

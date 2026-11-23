@@ -1,0 +1,108 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# The apt repository on this repository's GitHub Pages (PLAN.md "Packaging"), as in SpatialAudioServer:
+# https://jakdaniels.github.io/opensimtools/ with deb/, signed with the project key. Rebuilt from the files of the
+# latest two published releases (not drafts or pre-releases) whenever a release is published, so no package is ever
+# committed to git, and older releases drop out of the site (they stay on the Releases page).
+# The build always runs on main (the github-pages environment deploys from main only): a release published by hand
+# relays to it here, and release.yml (label "publish") starts it directly, since a release its token publishes starts
+# no workflow. "Run workflow" on main rebuilds the site by hand.
+# Needs: Settings → Pages → Source "GitHub Actions", and the secret OPENSIMTOOLS_SIGNING_KEY (the armoured private
+# key whose public half is packaging/signing-key.asc).
+name: pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Rebuild the site from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pages.yml -R "$GITHUB_REPOSITORY" --ref main
+
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: On main only
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run pages on main (the github-pages environment deploys from main only)."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q apt-utils
+
+      - name: The signing key
+        env:
+          OPENSIMTOOLS_SIGNING_KEY: ${{ secrets.OPENSIMTOOLS_SIGNING_KEY }}
+        run: |
+          [ -n "$OPENSIMTOOLS_SIGNING_KEY" ] || { echo "::error::The secret OPENSIMTOOLS_SIGNING_KEY is not set."; exit 1; }
+          printf '%s\n' "$OPENSIMTOOLS_SIGNING_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format long
+
+      - name: The latest two releases' packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p packages
+          tags="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases -L 2 --json tagName -q '.[].tagName')"
+          [ -n "$tags" ] || { echo "::error::No published release."; exit 1; }
+          for tag in $tags; do
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "downloads/$tag" -p '*.deb' -p SHA256SUMS
+            (cd "downloads/$tag" && sha256sum -c --ignore-missing --quiet SHA256SUMS && rm SHA256SUMS)
+            mv "downloads/$tag"/* packages/
+          done
+          echo "Releases: $(echo $tags)"
+          ls -l packages
+
+      - name: Build the repository
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          scripts/build-repos.sh packages site "https://$owner.github.io/${GITHUB_REPOSITORY#*/}"
+          size="$(du -sb site | cut -f1)"
+          echo "Site: $((size / 1048576)) MB"
+          # GitHub Pages sites may be about 1 GB.
+          [ "$size" -lt 1000000000 ] || { echo "::error::The site is $((size / 1048576)) MB, over Pages' 1 GB."; exit 1; }
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+          include-hidden-files: true   # .nojekyll (v4 and later leave hidden files out by default)
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

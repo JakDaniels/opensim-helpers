@@ -1,0 +1,5 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# /run/osctl: the instances' tmux sockets and run state, shared with the opensim group (PLAN.md "Packaging").
+d /run/osctl 2770 opensim opensim -

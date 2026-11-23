@@ -14,16 +14,16 @@ what aged badly. It is written in C# on .NET 10.
 |---|---|
 | Name and CLI | `osctl`, with subcommands (`osctl instance add`, `osctl start`, …), not MIOS's `--flags`. |
 | Supervision | One systemd template unit per instance (`osctl@<name>.service`). OpenSim runs in a tmux pane of its own, so `osctl console <name>` attaches like `mios --view`. Restart limits and "broken" detection come from systemd. osctl has no daemon of its own. |
-| Databases | MariaDB/MySQL for normal instances; SQLite allowed per instance for throwaway standalones. |
+| Databases | MariaDB/MySQL for normal instances (the default for `instance add`); SQLite (`--db sqlite`) for throwaway standalones. |
 | Builds | Named builds (repo + branch/tag, optional addon modules and patches). Each instance chooses a build. |
 | Install layout | A .deb package: `/usr/bin/osctl`, config in `/etc/osctl`, data in `/var/lib/osctl`, run as the system user `opensim`. systemd system units. |
-| First start | Unattended. osctl writes `[Estates] DefaultEstateName/DefaultEstateOwner*` so OpenSim asks nothing. A manual foreground start stays available. |
+| First start | Unattended. osctl writes `[Estates] DefaultEstateName/DefaultEstateOwner*` so OpenSim asks nothing. On a standalone OpenSim creates the owner's account: `instance add` generates its password, shows it once and keeps it in the instance's `secrets.ini` (`--estate-owner-password` sets your own). A manual foreground start stays available. |
 | Scope | Simulators, then Robust grid services, backups (OAR/IAR, DB dumps), scheduled restarts. Stats and a web UI come last. Importing old MIOS installs is **not** in scope. |
 | Console | OpenSim's local console in tmux; **no REST console** (OpenSim's `console = rest` replaces the local console, so the tmux pane could no longer take input). The tmux socket is open to the `opensim` group. `osctl cmd` types into the pane and reads the output back from it. |
 | osctl's own config | ini files, in the same dialect as OpenSim's, so one parser serves both. |
 | Region defaults | MIOS's `Regions.ini.example` values become the shipped `region-defaults.ini`. |
 | Grids | OSGrid gets a ready-made config set now; other grids later (the mechanism allows for them); see "Config sets and grids". |
-| CI and releases | Same flow as SpatialAudioServer: work on `develop`, CI on pull requests, merging develop → main releases (next patch version, `minor`/`major` labels), .deb packages served from the same signed apt repository. |
+| CI and releases | Same flow as SpatialAudioServer: work on `develop`, CI on pull requests, merging develop → main releases (next patch version, `minor`/`major` labels). The repository is `JakDaniels/opensimtools` (renamed from opensim-helpers); its own GitHub Pages site, https://jakdaniels.github.io/opensimtools/, is the signed apt repository (its own key), not SpatialAudioServer's. |
 | Platform | Linux only, Ubuntu first (26.04 here; 24.04 should work). |
 | Licence | Apache-2.0 (as the repo). |
 
@@ -66,7 +66,7 @@ what aged badly. It is written in C# on .NET 10.
     overrides/*.ini         instance overrides
     regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
     startup_commands.txt, shutdown_commands.txt
-    generated/              OpenSim.ini (combined), empty.ini, Regions/, log4net.config — rebuilt on each start
+    generated/              OpenSim.ini (combined, 0640), Regions/, config/ (empty), log4net.config — rebuilt on each start
     scriptengines/, data/ (SQLite files), backups/
 /var/cache/osctl/assets/<grid>/   Flotsam asset cache, one per grid (sharing between grids is wrong, as MIOS noted)
 /var/log/osctl/<name>/      OpenSim.log, console history
@@ -79,6 +79,7 @@ names). Region names follow OpenSim's rules (MIOS's regex, plus anything OpenSim
 ## Commands (first cut)
 
 ```
+osctl init                           create the directories and default settings files (never overwrites)
 osctl doctor                         check dotnet SDK/runtime 8, tmux, git, libgdiplus, MariaDB, permissions
 osctl build add|list|update|rollback|remove <build> [--repo URL] [--ref REF] [--addon REPO[@REF]] [--patches DIR]
 osctl configset list|fetch [<set>]
@@ -103,6 +104,11 @@ osctl run <name> [--foreground]      what the systemd unit runs; not usually cal
 
 All list/status commands take `--json` so scripts (and the later web UI) can use them.
 
+Every command takes `--root DIR` (or `OSCTL_ROOT`), so development and tests use a directory instead of `/`, and
+`--dry-run`, which prints the commands that would change something (`would run: …`) while queries still run.
+Exit codes: 0 success; 1 the command ran but something failed (a doctor check, an instance that would not start);
+2 an error osctl can explain (bad setting, missing file), printed as one line on stderr.
+
 ## Running instances: systemd + tmux
 
 `osctl@.service` (installed by the package), roughly:
@@ -123,17 +129,41 @@ StartLimitIntervalSec=300
 StartLimitBurst=3        # MIOS's "broken" rule, values from osctl.ini
 ```
 
+`[Supervisor] Mode` in osctl.ini chooses how: `systemd` (system units, from the package), `systemd-user` (your
+own units: `osctl units install --user` writes them with `--root`, so a development root can be tried under real
+systemd), or `direct` (no systemd: `osctl start` runs `osctl run` in the background with `setsid`; no restart after
+a crash, nothing at boot; for development and the tests). `osctl units install|show` writes or prints the unit;
+it carries the [Restart] and [Timeouts] values, so it is installed again after they change.
+
 `osctl run <name>`:
-1. Regenerates the instance's configuration (below) and checks it (ports free, DB reachable).
-2. Starts a tmux server just for this instance (`tmux -S /run/osctl/<name>.sock`, `remain-on-exit on`) running
-   `dotnet OpenSim.dll -inimaster=empty.ini -inifile=OpenSim.ini -inidirectory=<empty> -logconfig=log4net.config`
+1. Regenerates the instance's configuration (below) and checks it (regions exist, ports free).
+2. Starts a tmux server just for this instance (`tmux -S /run/osctl/<name>.sock`, `remain-on-exit on`; under a
+   long development root the socket goes to `/tmp/osctl-<hash>/`, as socket paths must fit in 107 bytes) running
+   `dotnet OpenSim.dll -inimaster=none -inifile=generated/OpenSim.ini -inidirectory=generated/config -logconfig=generated/log4net.config`
+   (`none` skips OpenSim's own master file; the empty `config/` stops OpenSim merging any `bin/config/*.ini`;
+   tried by hand in phase 2: a SQLite standalone with two regions started unattended and shut down with exit code 0)
    in the build's `current/bin`. The tmux server stays in the unit's cgroup, so systemd sees and kills everything.
-3. Waits for readiness (log line "LOGINS ENABLED", or `/simstatus/` on the instance port), then sends `READY=1`.
+   The pane first runs `sh -c 'read -r _ && exec "$@"'`: osctl attaches `pipe-pane` (the console transcript,
+   `/var/log/osctl/<name>/console.log`, the previous one kept as `.1`) and then presses Enter, so the transcript
+   has OpenSim from its first line and the pane's PID is OpenSim's. OpenSim runs from the release directory itself,
+   not `current/`, and the release is recorded in `/run/osctl/<name>.state` so pruning keeps it.
+3. Waits for readiness: every region's `INITIALIZATION COMPLETE FOR <region> - LOGINS ENABLED` in the console
+   transcript (RegionReady prints it only to the console, once scripts have compiled; `/simstatus/` answers
+   earlier). If [Timeouts] StartSeconds pass first, it logs a warning and carries on as ready. Then `READY=1`.
 4. Waits for the OpenSim process to exit and exits with its exit code. A `shutdown` typed on the console exits 0
    and the unit stays stopped; a crash exits non-zero and systemd restarts it.
 
-`osctl run-stop` sends `shutdown` (RemoteAdmin `admin_shutdown`, falling back to tmux `send-keys`) and waits;
-systemd kills after `TimeoutStopSec`. `--force` on `osctl stop` kills straight away.
+`osctl run-stop` sends `shutdown` (RemoteAdmin `admin_shutdown`, falling back to tmux `send-keys`) and waits up
+to [Timeouts] StopSeconds, then kills OpenSim (SIGTERM, then SIGKILL); systemd kills after `TimeoutStopSec`. The
+runner does the same on SIGTERM. `--force` on `osctl stop` kills straight away.
+
+"Broken": with `Restart=on-failure`, a unit that stays failed after restarts is one systemd gave up on ("Start
+request repeated too quickly"; systemd 259 leaves `Result` at the last exit code, not `start-limit-hit`).
+`osctl status` shows it as broken; `osctl start` resets it (`reset-failed`) and starts it again.
+
+Tried on this machine under systemd user units (phase 3): start (ready in ~5 s), crash (SIGKILL) restarted after
+10 s, four quick crashes gave broken, `osctl start` recovered it, `osctl stop` through RemoteAdmin left it
+inactive with success, `shutdown` typed at the console left it stopped (exit 0, no restart), enable/disable.
 
 Permissions: members of group `opensim` run osctl without sudo. The package ships a polkit rule letting that group
 manage `osctl@*.service` and the osctl timers. Each instance's tmux socket (`/run/osctl/<name>.sock`) is mode 0660
@@ -150,29 +180,80 @@ uses RemoteAdmin, because it reports success or failure properly.
 
 For each start (and for `osctl config show`), in order, later wins:
 
-1. `[Const]`: `InstanceName`, `InstancePort` (lowest region port, as MIOS), `InstanceDBName`, `EstateDBName`,
-   `InstanceDir`, `BinDir`, `GridName`, `PublicHostName`.
-2. The config set's files, in the listed order, with `Include-*` followed relative to the build's `bin/`.
-3. `/etc/osctl/overrides/*.ini`, alphabetical.
-4. The instance's `overrides/*.ini`, alphabetical.
-5. Forced settings: PID file, console history, `regionload_regionsdir`, startup/shutdown command files,
-   `ScriptEnginesPath` (XEngine and YEngine), `http_listener_port`/SSL port, asset cache dir, database connection
-   strings (MariaDB, or SQLite paths under `data/`), estate defaults, RemoteAdmin (enabled, localhost only,
-   generated password), `ManagedStatsRemoteFetchURI`.
+1. The config set's files, loaded as OpenSim loads them from the build's `current/bin` (with the config set's
+   overlay and edits, below).
+2. `/etc/osctl/overrides/*.ini`, alphabetical.
+3. The instance's `overrides/*.ini`, alphabetical.
+4. What osctl sets itself (shown as "set by osctl" by `config explain`), `src/Osctl/Instances/ConfigGenerator.cs`:
+   - `[Const]` `InstanceName`, `InstancePort` (lowest region port, as MIOS), `InstanceDBName`, `EstateDBName`,
+     `InstanceDir`, `GridName`, for `${Const|…}` in overrides;
+   - `[Startup]` `PIDFile`, `ConsoleHistoryFile`, `crash_dir`, `regionload_regionsdir`, startup/shutdown command
+     files, `RegistryLocation`, `ManagedStatsRemoteFetchURI`; `[YEngine] ScriptEnginesPath` (XEngine is gone from
+     current OpenSim); `[Network]` HTTP and HTTPS ports; `[AssetCache] CacheDirectory` (per grid);
+   - everything else OpenSim writes in its working directory, the shared release `bin/` (found by running it):
+     `[Mesh] MeshFileCachePath`, `[MapImageService] TilesStoragePath` and `[GridService] MapTileDirectory`;
+   - `[Estates]` defaults (on a standalone also the owner's UUID, e-mail and password);
+   - `[RemoteAdmin]` on, `access_ip_addresses = 127.0.0.1`, the instance's generated password;
+   - MariaDB: `[DatabaseService]` provider and connection strings (the config set's `Include-Storage` is not
+     followed); SQLite: every `URI=file:` connection string moved into the instance's `data/`.
 
-The `Include-*`, `[Architecture]` and `[Includes]` keys are removed from the result (they have been applied).
-Values stay raw so OpenSim still expands `${Const|…}`. Regions: `region-defaults.ini`, then
-`regions/Regions.ini`, then the per-region module files, written to `generated/Regions/Regions.ini`.
+`Include-*` keys are removed from the result (they have been followed), and so are sections left empty.
+Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `region-defaults.ini`,
+then the instance's other `regions/*.ini` (per-region module settings, by region name), then `regions/Regions.ini`;
+written to `generated/Regions/Regions.ini`. `osctl config show|explain|diff|generate` work on this; passwords are
+shown as `********` unless `--show-secrets`.
 
-The ini reader/writer must match Nini's behaviour (quotes, `;` comments, duplicate keys, sections that repeat,
-keys case) closely; it gets its own test suite built from the real files in OpenSim's `bin/`.
+Step 1 is loaded the way OpenSim loads it (with its includes, below), and the override files of steps 2 and 3 are
+merged on top of that result. Overrides are plain files: an `Include-*` key in one is reported, not followed.
+
+### The ini dialect
+
+osctl reads and writes ini files the way Nini does, because Nini is what OpenSim uses (checked in opensim-libs
+`Nini/Source/Ini/IniReader.cs`, `IniDocument.cs`, `Config/ConfigCollection.cs`, and OpenSim's
+`ConfigurationLoader.cs`; `src/Osctl/Ini/` follows them, with tests):
+
+- `;` starts a comment, at the start of a line or after an unquoted value. `#` is **not** a comment: a line
+  starting with `#` is an error ("expected assignment operator").
+- A value whose first character is `"` runs to the next `"`, exactly (spaces and `;` kept); the rest of the line
+  is ignored. An unquoted value ends at `;`, at a `"`, or at the end of the line, and loses trailing spaces. So a
+  value can never contain `"` or a line break; the writer refuses such values rather than write something OpenSim
+  would read differently.
+- Section and key names are case-sensitive.
+- Within one file, a repeated key keeps its **first** value, and a repeated `[Section]` **replaces** the earlier
+  one completely (it does not add to it).
+- Between files (merging), later files win key by key; new sections and keys are added at the end.
+- Includes: after each file is merged, every `Include-*` key in the merged result so far is looked at, and the
+  files it names that are not on the list yet go to the **end** of the list. So included files load after all the
+  files given on the command line. Paths are relative to `bin/`; `*` and `?` work in any path part (osctl sorts the
+  matches, where OpenSim takes file system order); a non-wildcard include that matches nothing is only a warning.
+  http includes (which OpenSim reads as XML) are not supported.
+- OpenSim expands `${Section|Key}` itself after loading, so osctl leaves those untouched.
 
 ## Config sets and grids
 
-A config set lists base files in load order, each from the build's `bin/` (`OpenSimDefaults.ini`,
-`OpenSim.ini.example`, …) or from a URL (cached under `/var/lib/osctl/configsets/`, refreshed by
-`osctl configset fetch`). A config set also names its **grid** (estate database, asset cache, and the scope of
-the location clash check).
+A config set is `/etc/osctl/configsets/<name>.ini` (`src/Osctl/ConfigSets/ConfigSet.cs`; `osctl init` installs the
+shipped ones). It works as an overlay on the build's `bin/`, because grid files include each other by their
+`bin/` paths (OSGrid's `OpenSim.ini` includes `bin/config-include/GridHypergrid.ini`, which includes OSGrid's own
+`GridCommon.ini`):
+
+```
+[ConfigSet]
+    Description = …
+    Mode = standalone | grid      ; standalone: own services, OpenSim creates the estate owner
+    Grid = osgrid                 ; grid mode: shared estate database and asset cache, clash checks
+    Load = OpenSimDefaults.ini, OpenSim.ini
+[Files]                           ; a path as OpenSim reads it from bin/ = where it really comes from:
+    OpenSim.ini = bin:OpenSim.ini.example                       ; another file in bin/
+    config-include/GridCommon.ini = https://download.osgrid.org/GridCommon.ini.txt   ; downloaded
+    config-include/Extra.ini = my-grid/Extra.ini                ; a file under /etc/osctl/configsets/
+[Set OpenSim.ini]                 ; edits to a file before its includes are followed: Section|Key = value
+    Architecture|Include-Architecture = config-include/StandaloneHypergrid.ini
+```
+
+`[Set …]` exists because an override cannot undo an include that has already been followed. Each standalone
+instance is a grid of its own (`standalone-<instance>`). Downloads are cached in `/var/lib/osctl/configsets/<set>/`;
+`osctl configset fetch` refreshes them (`instance add` fetches them the first time), and a download that does not
+read as an ini file never replaces the cached copy. `osctl configset list|show` show them.
 
 Shipped config sets:
 - `standalone` and `standalone-hg`: OpenSim's own files.
@@ -189,18 +270,56 @@ Grid details change, so shipped grid config sets are data files that can be upda
 
 ## Builds
 
-`osctl build update <b>`: fetch, check out the ref, copy or clone the addon modules into `addon-modules/`, apply
-patches (`git apply`), `./runprebuild.sh`, `dotnet build -c Release OpenSim.sln`, copy `bin/` into a new release
-directory, run a smoke check (the DLLs load), switch `current`. Instances use the new release at their next
-(re)start; `osctl build update --restart` restarts the instances on that build. Keep the last N releases
-(`osctl build rollback`). Example: build `sas-dev` = OpenSim master + `os-webrtc-sas` addon + its `core-patches/`.
+A build is defined in `/etc/osctl/builds/<name>.ini` (`osctl build add`, `osctl build addon add`, or by hand):
+`[Build]` has `Repository`, `Ref` (branch, tag or commit; `HEAD` = the repository's default branch),
+`Patches` (optional directory of `*.patch`, relative to `/etc/osctl/builds`), `KeepReleases` (3), `Prebuild`
+(`sh runprebuild.sh`) and `Compile` (`dotnet build -c Release OpenSim.sln`); each `[Addon <name>]` has
+`Repository`, `Ref` and `Patches` (a directory in the addon, such as os-webrtc-sas's `core-patches`). The commands
+are settable for forks that build differently (and so the tests can use a fake build).
+
+`osctl build update [<b>…] [--force] [--verbose]`, holding a lock on the build (`.lock`, flock):
+
+1. Clone or fetch the source into `builds/<b>/src` and each addon into `builds/<b>/addons/<a>` (`--prune --tags
+   --force`, and `remote set-head --auto` so `HEAD` follows a changed default branch).
+2. Resolve the refs (`origin/<ref>`, then a tag, then a commit) and work out the fingerprint: the commits, the
+   SHA-256 of every patch, and the two commands. If it matches the current release's, the build is up to date and
+   nothing is built (`--force` builds anyway).
+3. Check out with `checkout --force --detach` and `clean -fdx` (osctl owns these clones), copy each addon into
+   `addon-modules/<a>` without its `.git`, apply the patches (the addons' first, in addon order, then the build's;
+   each directory sorted by name; `git apply --check` first, so a patch that no longer applies stops the update
+   with a clear message).
+4. Run the prebuild and compile commands (`sh -c`, telemetry off), all output to `logs/<release>.log`; on failure
+   the last 30 lines are shown.
+5. Check `bin/` has `OpenSim.dll`, `OpenSim.runtimeconfig.json` and `Robust.dll`, copy it to
+   `releases/<release>.partial/bin` with `release.ini` (repository, ref, commit and subject, addon commits, patch
+   hashes, commands, osctl version), rename to `releases/<release>`, and switch `current` with one `rename(2)`.
+6. Prune: keep the newest `KeepReleases` and always the current one.
+
+Release names are `yyyyMMdd-HHmmss-<commit>` (UTC), so they sort by age. Nothing instances use changes until the
+switch, and a failure leaves the current release as it was. Instances use the new release at their next
+(re)start; `osctl build update --restart` (phase 3) restarts the instances on that build.
+`osctl build rollback <b> [--to <release>]` switches `current` back; `osctl build list|show` show the releases;
+`osctl build remove <b> --yes` removes everything.
+
+Tried for real: build `sas-dev` = OpenSim master + `os-webrtc-sas` (its `core-patches/` applied), 1 min 42 s;
+an update with nothing new takes 0.3 s. A release's `bin/` is about 90 MB and the source tree about 490 MB.
+
+Still to do in later phases: pruning must also keep releases that running instances use (phase 3); builds run
+as the `opensim` user with group-writable directories when osctl is installed (phase 4); releases could
+hard-link files unchanged from the previous release to save space.
 
 ## Databases
 
-- MariaDB: `osctl db init` creates `osctl_admin` (CREATE/DROP on `opensim\_%`) and `opensim` (all on those
-  databases). Each instance gets `opensim_<name>`; the estate database is one per grid (`opensim_estate_<grid>`),
-  not one shared by everything as in MIOS, because standalones and grids must not share estates.
-  `instance delete` drops the instance database (after confirmation; a final dump is taken first).
+- MariaDB: `sudo osctl db init`, once, connects as root over the unix socket (Ubuntu's MariaDB lets the system root
+  in that way), generates the passwords missing from `secrets.ini` (edited in place, comments kept), and creates
+  `osctl_admin` and `opensim`, both with all rights on `opensim\_%` databases only; it warns when
+  `max_allowed_packet` is under 128 MB. A server on another machine: create the two users by hand. `osctl doctor`
+  checks that `osctl_admin` can connect.
+- Each instance gets `opensim_<name>`; the estate database is one per grid (`opensim_estate_<grid>`), not one
+  shared by everything as in MIOS, because standalones and grids must not share estates. `instance add` creates
+  them (utf8mb4) and refuses to start without `db init`. `instance delete` dumps the instance's database (and a
+  standalone's own estate database) with `mariadb-dump` to `/var/lib/osctl/deleted/<name>-<time>/` and drops them
+  (`--keep-database` leaves them). The dump's password goes in a temporary 0600 file, not on the command line.
 - SQLite: OpenSim's `SQLiteStandalone.ini` storage, with file paths redirected to the instance's `data/`.
   Standalone only.
 - Library: MySqlConnector.
@@ -227,6 +346,42 @@ minute into SQLite (MIOS's `Stats.ini` definitions are the starting set of serie
 RRAs: 1 min for a day, 5 min for a week, 1 h for 8 weeks, 1 day for 3 years), and serves a page with status and
 graphs (static HTML/JS, no build step). Read-only to begin with.
 
+## Packaging
+
+`scripts/build-packages.sh [x64|arm64]` (nfpm, as in SpatialAudioServer) makes `dist/osctl_<version>_<arch>.deb`:
+
+- `/usr/bin/osctl`: a self-contained single-file .NET publish (runtime inside, invariant globalisation), so no
+  .NET 10 is needed; OpenSim's .NET 8 SDK is only recommended, because not every Ubuntu release's archive has it
+  (26.04's comes from a PPA here). `osctl doctor` says what is missing.
+- `/usr/lib/systemd/system/osctl@.service`, written at build time by `osctl units show --defaults --program
+  /usr/bin/osctl`; `sudo osctl units install` writes `/etc/systemd/system/osctl@.service` (which wins) after
+  [Restart] or [Timeouts] change.
+- `/usr/lib/tmpfiles.d/osctl.conf`: `/run/osctl` 2770 opensim:opensim.
+- `/usr/share/polkit-1/rules.d/50-osctl.rules`: members of the opensim group may start, stop, restart, kill and
+  reset-failed `osctl@<name>.service` without sudo. Enabling at boot is not covered (polkit does not say which unit
+  `manage-unit-files` is for), so `sudo osctl enable <name>`.
+- Depends: tmux (>= 3.3), git. Recommends: systemd, polkitd, dotnet-sdk-8.0, libgdiplus, mariadb-client.
+
+The install script creates the system account `opensim` (group `opensim`, home `/var/lib/osctl`, no login), runs
+`osctl init`, and makes `/etc/osctl`, `/var/lib/osctl`, `/var/cache/osctl` and `/var/log/osctl` group-shared:
+owner opensim:opensim, directories 2770 (setgid, so new files stay in the group), files group-writable;
+`secrets.ini` root:opensim 0640. osctl itself runs with umask 007, so what one member creates the others and the
+instances (running as opensim) can change, and nobody else can read. People who manage instances join the group
+(`sudo usermod -aG opensim <user>`). An upgrade fixes only the top directories (builds are large) and leaves running
+instances alone; removal stops them; purge removes /etc/osctl, /var/lib/osctl, /var/cache/osctl and /var/log/osctl
+(never the MariaDB databases).
+
+CI and releases as in SpatialAudioServer: `ci.yml` (tests, on pull requests), `drafts.yml` (by hand on develop:
+the rolling pre-release "develop (draft)"), `release.yml` (a merged pull request into main tags the next version,
+builds and tests the packages into a draft release, published with the label `publish`; afterwards main is merged
+back into develop and CHANGELOG.md rolls over), all building with `packages.yml`, which also installs and tries the
+x64 package in Ubuntu 24.04, Ubuntu 26.04 and Debian 13 containers (`scripts/test-packages.sh`). The apt repository
+is this repository's GitHub Pages site, https://jakdaniels.github.io/opensimtools/ (`pages.yml`,
+`scripts/build-repos.sh`, as in SpatialAudioServer but .deb only): rebuilt from the latest two published releases
+whenever one is published, signed with the key in `packaging/signing-key.asc` (its own, made 2026-11-23, fingerprint
+866F6A96EA961E4B5CB8C70C243C8C3F505D1D3B, expires 2031-11-22; the private half is the secret
+`OPENSIMTOOLS_SIGNING_KEY`). `release.yml` starts it when it publishes a release.
+
 ## Implementation notes
 
 - .NET 10, one console project `src/Osctl` + `src/Osctl.Tests` (xUnit). Libraries: System.CommandLine,
@@ -239,8 +394,7 @@ graphs (static HTML/JS, no build step). Read-only to begin with.
   into the release notes.
 - CI and releases copied from SpatialAudioServer: `develop` for day-to-day work, a ruleset on `main` (pull request,
   merge commits only, required test check), `ci.yml` on pull requests, `drafts.yml` (by hand) for test packages,
-  `release.yml` on merge to main, `pages.yml` adding the .debs to the existing signed apt repository
-  (jakdaniels.github.io), so `apt install osctl` works next to `spatialaudioserver`.
+  `release.yml` on merge to main, `pages.yml` building the signed apt repository on this repository's Pages.
 
 ## Phases
 
@@ -269,7 +423,4 @@ graphs (static HTML/JS, no build step). Read-only to begin with.
 
 None at the moment. Which further grids get shipped config sets is decided later.
 
-Settled: the apt repository stays in SpatialAudioServer. Its `pages.yml` already pulls acousticmultimixer's latest
-release from that repository; osctl's latest release is added the same way, and osctl's `release.yml` triggers
-SpatialAudioServer's `pages.yml` (`gh workflow run -R JakDaniels/SpatialAudioServer`, which needs a token with
-access to that repository).
+Settled: the apt repository is this repository's own GitHub Pages site (see "Packaging"), not SpatialAudioServer's.

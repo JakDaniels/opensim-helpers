@@ -1,0 +1,194 @@
+# Copyright 2026 Simon Annetts/Jak Daniels
+# SPDX-License-Identifier: Apache-2.0
+#
+# Releases (PLAN.md "Packaging"), as in SpatialAudioServer. Two ways in:
+#  - a pull request merged into main (the usual way): the next version is tagged on the merge commit, the patch
+#    version unless the pull request has the label "minor" or "major"; the notes are the "## Unreleased" section of
+#    CHANGELOG.md (kept up to date with each change to osctl itself). With no entries there (a merge
+#    of CI or docs changes only), no release is made. Afterwards CHANGELOG.md on develop gets the version's section
+#    (a commit by this workflow: pull develop).
+#  - a version tag pushed by hand (scripts/make-release.sh, or git tag -a v0.1.0 && git push origin v0.1.0): that
+#    tag and its message.
+# Either way: the packages are built and tested (packages.yml, as for drafts) into a draft release "osctl
+# X.Y.Z" (a pre-release for -rc tags), published only when the pull request has the label "publish" (otherwise
+# check it and publish it by hand). The tests are not run again: ci.yml must have passed for the commit, or for the
+# pull request's head merged into it with the same files (a docs-only pull request skips ci.yml: then run it by
+# hand on main and tag by hand).
+name: release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # the tag, the release, CHANGELOG.md on develop
+  actions: read # ci.yml's runs, for the check
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.event_name == 'push' || github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      intro: ${{ steps.prepare.outputs.intro }}
+      release: ${{ steps.prepare.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          fetch-depth: 0
+
+      # The tags as on GitHub, with their messages (a checkout for a tag's push may keep that tag without one).
+      - name: Tags
+        run: git fetch --force --tags origin
+
+      - name: Version, CI and notes
+        id: prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSHED_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          if [ -n "$PUSHED_TAG" ]; then
+            tag="$PUSHED_TAG"
+            echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+              || fail "$tag is not a version tag (v0.1.0 or v0.1.0-rc.1)"
+            sha="$(git rev-parse "$tag^{commit}")"
+            git merge-base --is-ancestor "$sha" origin/main || fail "$tag ($sha) is not on main"
+          else
+            sha="$(git rev-parse HEAD)"
+            version="$(scripts/next-version.sh "$LABELS")"
+            tag="v$version"
+            ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || fail "$tag exists already"
+            echo "Pull request #$PR, labels: ${LABELS:-none}; next version $version"
+          fi
+          version="${tag#v}"
+
+          # ci.yml passed for this commit, or for the one a merge brought in (the pull request's head) when its files
+          # are the same: main had nothing of its own, so the code is what was tested.
+          tested=""
+          for candidate in "$sha" $(git rev-parse -q --verify "$sha^2" || true); do
+            git diff --quiet "$candidate" "$sha" || continue
+            passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$candidate&status=success" -q .total_count)"
+            if [ "$passed" != 0 ]; then tested="$candidate"; break; fi
+          done
+          [ -n "$tested" ] || fail "ci.yml has not passed for $sha (nor for the same files): run it on main (Actions, ci, Run workflow), then tag by hand (scripts/make-release.sh)"
+          echo "ci.yml passed for $tested (the same files as $sha)"
+
+          if [ -n "$PUSHED_TAG" ]; then
+            message="$(git tag -l --format='%(contents)' "$tag" | sed '/-----BEGIN PGP SIGNATURE-----/,$d')"
+            [ -n "$message" ] || message="(No tag message: write what changed here before publishing.)"
+          else
+            message="$(scripts/changelog.sh --unreleased < CHANGELOG.md)"
+            if [ -z "$message" ]; then
+              echo "::notice::No entries under Unreleased in CHANGELOG.md (nothing changed in osctl itself): no release."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # The annotated tag, with the notes as its message (a tag pushed with this workflow's token starts no
+            # other workflow, so the build below is this run's).
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            printf '%s\n' "$message" | git tag -a "$tag" -F - "$sha"
+            git push origin "refs/tags/$tag"
+          fi
+          {
+            echo "release=true"
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "intro<<OSCTL_NOTES_END"
+            echo "osctl **{version}**, built from \`main\` at {sha}."
+            echo
+            echo "$message"
+            echo "OSCTL_NOTES_END"
+          } >> "$GITHUB_OUTPUT"
+
+  packages:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    uses: ./.github/workflows/packages.yml
+    with:
+      kind: release
+      tag: ${{ needs.prepare.outputs.tag }}
+      ref: ${{ needs.prepare.outputs.tag }}
+      version: ${{ needs.prepare.outputs.version }}
+      intro: ${{ needs.prepare.outputs.intro }}
+
+  publish:
+    needs: [prepare, packages]
+    if: needs.prepare.outputs.release == 'true' && contains(github.event.pull_request.labels.*.name, 'publish')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write # starting pages.yml
+    steps:
+      - name: Publish the release (label "publish")
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
+
+      # A release published with this token starts no workflow, so the apt repository is rebuilt from here.
+      - name: Update the apt repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run pages.yml -R "$GITHUB_REPOSITORY" --ref main
+
+  # After a merge, on develop: main is merged back in, so the new tag (on main's merge commit) is in develop's history
+  # and MinVer versions drafts after it (0.2.1-alpha.N after v0.2.0, not 0.2.0-alpha.N); then CHANGELOG.md gets the
+  # version's section, and Unreleased keeps only what develop gained since (scripts/changelog.sh --rollover). A tag
+  # pushed by hand leaves both to scripts/make-release.sh.
+  changelog:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Merge main back, and CHANGELOG.md, on develop
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          git fetch --force --tags origin
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git reset --quiet --hard origin/develop
+            # main holds only what came from develop, so this merge changes no files; a conflict means someone
+            # committed to main directly, and a person has to merge it.
+            if ! git merge-base --is-ancestor "$TAG" HEAD; then
+              git merge --no-ff --no-edit -m "Merge ${TAG#v} from main into develop" "$TAG^{commit}" \
+                || { echo "::error::Merging main into develop conflicts: merge it by hand."; exit 1; }
+            fi
+            status=0
+            scripts/changelog.sh --rollover "$TAG" < CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.md" || status=$?
+            if [ "$status" = 0 ]; then
+              cp "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
+              git commit --quiet -m "CHANGELOG: ${TAG#v}" CHANGELOG.md
+            elif [ "$status" = 3 ]; then
+              echo "CHANGELOG.md already has ${TAG#v}"
+            else
+              exit "$status"
+            fi
+            [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/develop)" ] || exit 0 # nothing to push
+            # develop may have moved meanwhile: fetch and try again.
+            if git push origin HEAD:develop; then exit 0; fi
+            git fetch --quiet origin develop
+          done
+          exit 1

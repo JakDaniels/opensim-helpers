@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Osctl.Tests/Osctl.Tests.csproj" />
+  <Project Path="Osctl/Osctl.csproj" />
+</Solution>
