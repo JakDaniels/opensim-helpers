@@ -290,6 +290,12 @@ Each region's settings are built in this order, a later one winning:
 internet, set it to your public DNS name, either for all regions in `region-defaults.ini` or for one region with
 `osctl region set Welcome ExternalHostName=sim.example.org`.
 
+`osctl region get Welcome` shows a region's settings after these steps are applied, as `Key = Value`
+lines. Name settings to see only those, e.g. `osctl region get Welcome MaxAgents 'Max*'`; names ignore case, and
+`*` and `?` are wildcards. A name that matches nothing gives exit code 1. `--own` shows only the region's own settings
+(step 3), `--origin` adds the file and line each value comes from, and `--json` prints JSON. Passwords are shown as
+`********` unless `--show-secrets`.
+
 ### Config sets
 
 A config set is the base configuration an instance starts from. Three are shipped, in `/etc/osctl/configsets/`:

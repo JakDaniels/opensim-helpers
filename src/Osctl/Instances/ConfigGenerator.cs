@@ -221,6 +221,12 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         return doc;
     }
 
+    /// <summary>
+    /// Every region's effective settings (as written to generated/Regions/Regions.ini), each with the file it comes
+    /// from. Unlike <see cref="Generate"/>, this needs no build.
+    /// </summary>
+    public IniDocument RegionSettings(string name) => RegionsConfig(name, instances.Regions(name));
+
     private IniDocument RegionsConfig(string name, List<RegionDefinition> regions)
     {
         var defaults = File.Exists(paths.RegionDefaultsFile)
@@ -229,7 +235,9 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         var modules = new IniDocument();
         foreach (var file in IniFiles(instances.RegionsDir(name)).Where(f => Path.GetFileName(f) != "Regions.ini"))
             modules.Merge(IniParser.ParseFile(file));
-        var own = RegionDefinition.ToIni(regions);
+        // Read from the file itself (the regions were loaded from it) so that each value keeps its line.
+        var regionsFile = instances.RegionsFile(name);
+        var own = File.Exists(regionsFile) ? IniParser.ParseFile(regionsFile) : RegionDefinition.ToIni(regions);
 
         var doc = new IniDocument();
         foreach (var region in regions)

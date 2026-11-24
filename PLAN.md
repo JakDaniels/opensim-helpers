@@ -87,7 +87,7 @@ osctl db init                        create MariaDB users; per-instance DBs are 
 osctl instance add <name> --build B --configset S [--db mariadb|sqlite] [--estate NAME --estate-owner "First Last"]
 osctl instance list|show|delete <name>
 osctl region add <region> --instance I --location X,Y [--size 256..4096] [--port P] [--uuid U]
-osctl region list|remove|rename|move|set <region> …
+osctl region list|remove|rename|move|set|get <region> …
 osctl list                           instances and regions table (as mios --list), with state
 osctl start|stop|restart [<name>…] [--force]     none named = all enabled instances
 osctl status [<name>…]               systemd state + readiness + regions

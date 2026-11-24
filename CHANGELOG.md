@@ -5,6 +5,9 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: `osctl region get <region> [settings…]` shows a region's effective settings (defaults, module files, its own),
+  filtered by name with wildcards; `--own`, `--origin`, `--json`.
+
 ## 0.1.0 (2026-11-23)
 
 - osctl: first skeleton: `osctl doctor` checks git, tmux (3.3 or later), the .NET SDK and the .NET 8 runtime
