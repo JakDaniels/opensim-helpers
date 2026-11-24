@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-24)
+
 - osctl: `osctl visitors` lists who arrived in which region and when (login, hypergrid login or arrival, with the
   login IP), from the instances' logs; `--since`, `--csv`, `--json`.
 - osctl: `osctl backup create|list|prune|iar-password`: OARs of every region, the databases (mariadb-dump or
