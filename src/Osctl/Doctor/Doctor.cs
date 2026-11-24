@@ -41,6 +41,7 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths, IDat
         results.Add(await CheckDotnetRuntime(cancellationToken));
         results.Add(await CheckLibgdiplus(cancellationToken));
         results.Add(await CheckMariaDbClient(cancellationToken));
+        results.Add(await CheckSqlite(cancellationToken));
         results.Add(await CheckSystemd(cancellationToken));
         results.Add(await CheckAccount(settings.Account, cancellationToken));
         if (databases is not null)
@@ -142,6 +143,14 @@ public sealed partial class Doctor(IProcessRunner runner, OsctlPaths paths, IDat
             ? new("MariaDB client", CheckStatus.Ok, FirstLine(r.StandardOutput))
             : new("MariaDB client", CheckStatus.Warning, "not found; needed only for MariaDB instances",
                 "sudo apt install mariadb-client (and mariadb-server for a local database)");
+    }
+
+    private async Task<CheckResult> CheckSqlite(CancellationToken ct)
+    {
+        var r = await runner.RunAsync("sqlite3", ["--version"], cancellationToken: ct);
+        return r.Succeeded
+            ? new("sqlite3", CheckStatus.Ok, FirstLine(r.StandardOutput))
+            : new("sqlite3", CheckStatus.Warning, "not found; 'osctl backup' needs it for SQLite instances", "sudo apt install sqlite3");
     }
 
     private async Task<CheckResult> CheckSystemd(CancellationToken ct)

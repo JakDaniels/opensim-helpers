@@ -53,11 +53,23 @@ internal sealed class InstanceFixture : IDisposable
     public ConfigGenerator Generator(OsctlSettings? settings = null) =>
         new(Paths, settings ?? SettingsLoader.Load(Paths).Settings);
 
+    /// <summary>What osctl runs (empty tables: every program is "not found" unless a test answers it).</summary>
+    public FakeRunner Runner { get; } = new();
+
+    public Running.FakeRemoteAdmin Admin { get; } = new();
+
+    /// <summary>Lines given to osctl as its input (passwords).</summary>
+    public string? Input { get; set; }
+
+    /// <summary>Where 'units install' and 'schedule' write systemd units in these tests.</summary>
+    public string UnitDir => System.IO.Path.Combine(dir.Path, "units");
+
     public async Task<(int Exit, string Out, string Err)> Osctl(params string[] args)
     {
         var output = new StringWriter();
         var error = new StringWriter();
-        var env = new CliEnvironment(new FakeRunner(), output, error, Downloader: Web, Ports: Ports, Databases: Databases);
+        var env = new CliEnvironment(Runner, output, error, Downloader: Web, Ports: Ports, Databases: Databases, RemoteAdmin: Admin,
+            OsctlCommand: ["/usr/bin/osctl"], Input: new StringReader(Input ?? ""), SystemdUnitDir: UnitDir);
         var exit = await CliApp.RunAsync([.. args, "--root", Paths.Root], env);
         return (exit, output.ToString(), error.ToString());
     }

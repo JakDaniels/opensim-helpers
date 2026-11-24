@@ -164,6 +164,45 @@ public class RegionTests
     }
 
     [Fact]
+    public async Task GetShowsTheEffectiveSettingsWithTheirOrigins()
+    {
+        using var f = await WithInstances("A");
+        await f.Ok("region", "add", "Home", "--instance", "A", "--location", "1000,1000", "--port", "9010");
+        await f.Ok("region", "set", "Home", "MaxAgents=40", "MasterAvatarPassword=hush");
+        File.WriteAllText(Path.Combine(f.Instances.RegionsDir("A"), "modules.ini"), "[Home]\nMaxPrims = 20000\n");
+
+        // Everything: the defaults, the module file, then the region's own section (later wins).
+        var all = await f.Ok("region", "get", "Home");
+        Assert.Contains("InternalPort = 9010\n", all);
+        Assert.Contains("RegionType = Mainland\n", all);            // region-defaults.ini
+        Assert.Contains("MaxPrims = 20000\n", all);                 // regions/modules.ini
+        Assert.Contains("MaxAgents = 40\n", all);                   // its own, over the default 100
+        Assert.Contains("MasterAvatarPassword = ********\n", all);
+        Assert.Contains("MasterAvatarPassword = hush\n", await f.Ok("region", "get", "Home", "--show-secrets"));
+
+        // Filters: case-insensitive, with wildcards; always Key = Value.
+        Assert.Equal("MaxAgents = 40\n", await f.Ok("region", "get", "Home", "maxagents"));
+        Assert.Equal("MaxPrims = 20000\nMaxAgents = 40\n", await f.Ok("region", "get", "Home", "Max*"));
+
+        // --own: just regions/Regions.ini; --origin: where each value comes from.
+        var own = await f.Ok("region", "get", "Home", "--own");
+        Assert.Contains("MaxAgents = 40", own);
+        Assert.DoesNotContain("MaxPrims", own);
+        Assert.DoesNotContain("RegionType", own);
+        var origin = await f.Ok("region", "get", "Home", "MaxPrims", "RegionType", "--origin");
+        Assert.Contains($"; {Path.Combine(f.Instances.RegionsDir("A"), "modules.ini")}:2", origin);
+        Assert.Contains($"; {f.Paths.RegionDefaultsFile}:", origin);
+
+        var json = System.Text.Json.JsonDocument.Parse(await f.Ok("region", "get", "Home", "MaxAgents", "--json"));
+        Assert.Equal("40", json.RootElement.GetProperty("MaxAgents").GetString());
+
+        // A setting that is not there: what was found is still shown, and exit code 1.
+        var (exit, output, error) = await f.Osctl("region", "get", "Home", "MaxAgents", "NoSuchThing");
+        Assert.Equal((1, "MaxAgents = 40\n"), (exit, output));
+        Assert.Contains("no setting matching 'NoSuchThing'", error);
+    }
+
+    [Fact]
     public async Task ARegionNameInTwoGridsNeedsTheInstance()
     {
         using var f = await WithInstances("A", "B");

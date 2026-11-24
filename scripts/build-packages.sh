@@ -32,6 +32,12 @@ install -m 0755 "$stage/publish/osctl" "$stage/osctl"
 dotnet publish src/Osctl -c Release -p:DebugType=none -o "$stage/host" >/dev/null
 dotnet "$stage/host/osctl.dll" units show --defaults --program /usr/bin/osctl > "$stage/osctl@.service"
 grep -q '^ExecStart=/usr/bin/osctl run %i$' "$stage/osctl@.service"
+# The services the scheduled restart and backup timers start ('osctl schedule' writes the timers).
+for job in restart backup; do
+  dotnet "$stage/host/osctl.dll" units show --defaults --program /usr/bin/osctl --unit "$job" > "$stage/osctl-$job@.service"
+done
+grep -q '^ExecStart=/usr/bin/osctl restart --scheduled %i$' "$stage/osctl-restart@.service"
+grep -q '^ExecStart=/usr/bin/osctl backup create --scheduled %i$' "$stage/osctl-backup@.service"
 
 version="$(dotnet msbuild src/Osctl -restore -t:MinVer -getProperty:MinVerVersion -nologo | tail -n 1)"
 if [ -z "$version" ]; then

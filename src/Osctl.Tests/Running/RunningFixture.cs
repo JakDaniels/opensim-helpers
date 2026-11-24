@@ -97,11 +97,35 @@ internal sealed class FakeRemoteAdmin : IRemoteAdmin
 
     public List<(int Port, string Password, TimeSpan Delay)> Shutdowns { get; } = [];
 
+    public List<(int Port, string Message)> Broadcasts { get; } = [];
+
+    public List<string> Commands { get; } = [];
+
+    /// <summary>What admin_save_oar does (region, file); returns the refusal, or null.</summary>
+    public Func<string, string, string?>? OnSaveOar { get; set; }
+
+    /// <summary>What admin_console_command does; returns the refusal, or null.</summary>
+    public Func<string, string?>? OnConsoleCommand { get; set; }
+
     public Task<bool> ShutdownAsync(int port, string password, TimeSpan delay, bool notice, CancellationToken ct)
     {
         Shutdowns.Add((port, password, delay));
         return Task.FromResult(Answers);
     }
 
-    public Task<bool> BroadcastAsync(int port, string password, string message, CancellationToken ct) => Task.FromResult(Answers);
+    public Task<bool> BroadcastAsync(int port, string password, string message, CancellationToken ct)
+    {
+        lock (Broadcasts)
+            Broadcasts.Add((port, message));
+        return Task.FromResult(Answers);
+    }
+
+    public Task<string?> SaveOarAsync(int port, string password, string region, string file, CancellationToken ct) =>
+        Task.FromResult(OnSaveOar is null ? "not answered" : OnSaveOar(region, file));
+
+    public Task<string?> ConsoleCommandAsync(int port, string password, string command, CancellationToken ct)
+    {
+        Commands.Add(command);
+        return Task.FromResult(OnConsoleCommand is null ? "not answered" : OnConsoleCommand(command));
+    }
 }

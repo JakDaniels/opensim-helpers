@@ -4,6 +4,7 @@
 using System.CommandLine;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Osctl.Builds;
 using Osctl.ConfigSets;
 using Osctl.Databases;
@@ -237,6 +238,7 @@ internal static class InstanceCommands
         command.Add(RegionRemove(env, globals));
         command.Add(RegionRename(env, globals));
         command.Add(RegionMove(env, globals));
+        command.Add(RegionGet(env, globals));
         command.Add(RegionSet(env, globals));
         return command;
     }
@@ -381,6 +383,71 @@ internal static class InstanceCommands
         });
         return command;
     }
+
+    private static Command RegionGet(CliEnvironment env, GlobalOptions globals)
+    {
+        var region = RegionName();
+        var keys = new Argument<string[]>("settings")
+        {
+            Description = "Only these settings (case-insensitive; * and ? match any text and one character)",
+            Arity = ArgumentArity.ZeroOrMore,
+        };
+        var instanceOption = InstanceOption("The instance, if region names repeat in different grids");
+        var own = new Option<bool>("--own") { Description = "Only the region's own settings (regions/Regions.ini), not those it inherits" };
+        var origin = new Option<bool>("--origin") { Description = "Show the file (and line) each value comes from" };
+        var json = new Option<bool>("--json") { Description = "Print the settings as JSON" };
+        var secrets = new Option<bool>("--show-secrets") { Description = "Show passwords instead of ********" };
+        var command = new Command("get",
+            "Show a region's settings: [Region Defaults], the instance's other regions/*.ini, then its own section, later wins")
+        { region, keys, instanceOption, own, origin, json, secrets };
+        CliApp.SetAction(command, env, async (parse, _) =>
+        {
+            var (store, planner) = Planner(env, globals, parse);
+            var found = Find(planner, parse.GetRequiredValue(region), parse.GetValue(instanceOption));
+            var settings = new ConfigGenerator(globals.Paths(parse), globals.Settings(parse)).RegionSettings(found.Instance);
+            var regionsFile = store.RegionsFile(found.Instance);
+            var entries = settings[found.Region.Name]!.Entries
+                .Where(e => !parse.GetValue(own) || e.Origin?.File == regionsFile)
+                .ToList();
+
+            var patterns = parse.GetValue(keys) ?? [];
+            var missing = new List<string>();
+            if (patterns.Length > 0)
+            {
+                var matchers = patterns.Select(p => (Pattern: p, Regex: KeyPattern(p))).ToList();
+                missing.AddRange(matchers.Where(m => !entries.Any(e => m.Regex.IsMatch(e.Key))).Select(m => m.Pattern));
+                entries = entries.Where(e => matchers.Any(m => m.Regex.IsMatch(e.Key))).ToList();
+            }
+
+            string Value(Ini.IniEntry e) => parse.GetValue(secrets) ? e.Value : SecretMask.Mask(e.Key, e.Value);
+            if (parse.GetValue(json))
+            {
+                object shown = parse.GetValue(origin)
+                    ? entries.Select(e => new { e.Key, Value = Value(e), Origin = e.Origin?.ToString() })
+                    : entries.ToDictionary(e => e.Key, Value);
+                await env.Out.WriteLineAsync(JsonSerializer.Serialize(shown, CliApp.Json));
+            }
+            else
+            {
+                var width = entries.Count == 0 ? 0 : entries.Max(e => $"{e.Key} = {Value(e)}".Length);
+                foreach (var e in entries)
+                {
+                    var line = $"{e.Key} = {Value(e)}";
+                    await env.Out.WriteLineAsync(parse.GetValue(origin) && e.Origin is { } o ? $"{line.PadRight(width)}  ; {o}" : line);
+                }
+            }
+
+            foreach (var pattern in missing)
+                await env.Error.WriteLineAsync($"osctl: region '{found.Region.Name}' has no setting matching '{pattern}'");
+            return missing.Count == 0 ? 0 : CliApp.ExitFailure;
+        });
+        return command;
+    }
+
+    /// <summary>A setting name pattern: case-insensitive, with * and ? as wildcards.</summary>
+    private static Regex KeyPattern(string pattern) =>
+        new("^" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static Command RegionSet(CliEnvironment env, GlobalOptions globals)
     {

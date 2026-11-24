@@ -26,8 +26,41 @@ public sealed record CliEnvironment(
     IPortProbe? Ports = null,
     IDatabaseFactory? Databases = null,
     IRemoteAdmin? RemoteAdmin = null,
-    IReadOnlyList<string>? OsctlCommand = null)
+    IReadOnlyList<string>? OsctlCommand = null,
+    TextReader? Input = null,
+    string? SystemdUnitDir = null)
 {
+    /// <summary>Where systemd units go: /etc/systemd/system, ~/.config/systemd/user, or a test directory.</summary>
+    public string UnitDir(bool user) => SystemdUnitDir ?? Operations.Schedules.UnitDir(user);
+
+    /// <summary>
+    /// Reads a secret: from <see cref="Input"/> when given (tests) or when stdin is not a terminal (one line), else
+    /// typed at the terminal without echo.
+    /// </summary>
+    public string ReadSecret(string prompt)
+    {
+        if (Input is not null || System.Console.IsInputRedirected)
+            return (Input ?? System.Console.In).ReadLine() ?? "";
+        Error.Write(prompt);
+        Error.Flush();
+        var text = new System.Text.StringBuilder();
+        while (true)
+        {
+            var key = System.Console.ReadKey(intercept: true);
+            if (key.Key == ConsoleKey.Enter)
+                break;
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (text.Length > 0)
+                    text.Length--;
+            }
+            else if (!char.IsControl(key.KeyChar))
+                text.Append(key.KeyChar);
+        }
+        Error.WriteLine();
+        return text.ToString();
+    }
+
     public IDatabaseFactory DatabaseFactory => Databases ?? new MySqlDatabaseFactory(Runner);
 
     public IRemoteAdmin Admin => RemoteAdmin ?? new HttpRemoteAdmin();
@@ -92,6 +125,8 @@ public static class CliApp
         root.Add(ConfigCommands.Create(env, globals));
         root.Add(DbCommands.Create(env, globals));
         foreach (var command in RunCommands.Create(env, globals))
+            root.Add(command);
+        foreach (var command in OperationsCommands.Create(env, globals))
             root.Add(command);
         return root;
     }

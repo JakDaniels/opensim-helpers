@@ -5,6 +5,19 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: `osctl visitors` lists who arrived in which region and when (login, hypergrid login or arrival, with the
+  login IP), from the instances' logs; `--since`, `--csv`, `--json`.
+- osctl: `osctl backup create|list|prune|iar-password`: OARs of every region, the databases (mariadb-dump or
+  sqlite3, gzipped) and users' inventories (IARs), one directory per backup; pruning keeps 7 daily and 4 weekly.
+- osctl: `osctl schedule restart|backup|remove|list`: scheduled restarts and backups as systemd timers (crontab lines
+  in direct mode); `osctl restart|stop --warn 10m` warns people in-world first, again at 5 and 1 minutes.
+- osctl: `osctl doctor` checks for sqlite3, which backups of SQLite instances need.
+
+- osctl: `osctl region get <region> [settings…]` shows a region's effective settings (defaults, module files, its own),
+  filtered by name with wildcards; `--own`, `--origin`, `--json`.
+
+## 0.1.0 (2026-11-23)
+
 - osctl: first skeleton: `osctl doctor` checks git, tmux (3.3 or later), the .NET SDK and the .NET 8 runtime
   OpenSim needs, libgdiplus, the MariaDB client, systemd and the `opensim` account; `--root` (or `OSCTL_ROOT`)
   points osctl at another directory than `/` for development.

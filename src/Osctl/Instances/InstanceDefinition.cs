@@ -21,6 +21,24 @@ public enum DatabaseKind
 public sealed record EstateDefinition(string Name, string Owner, Guid? OwnerUuid = null, string? OwnerEmail = null);
 
 /// <summary>
+/// When osctl restarts and backs up the instance (systemd OnCalendar expressions; PLAN.md "Backups and scheduled
+/// restarts"), and how many minutes before a restart people are warned (null: [Schedule] WarnMinutes).
+/// </summary>
+public sealed record InstanceSchedule(string? Restart = null, int? WarnMinutes = null, string? Backup = null)
+{
+    public static InstanceSchedule None { get; } = new();
+}
+
+/// <summary>
+/// The instance's backups: whose inventories (IARs) scheduled backups save, and how many backups to keep
+/// (null: osctl.ini [Backups]).
+/// </summary>
+public sealed record InstanceBackups(IReadOnlyList<string> IarUsers, int? KeepDaily = null, int? KeepWeekly = null)
+{
+    public static InstanceBackups None { get; } = new([]);
+}
+
+/// <summary>
 /// An instance, stored as /var/lib/osctl/instances/&lt;name&gt;/instance.ini:
 /// <code>
 /// [Instance]
@@ -32,10 +50,29 @@ public sealed record EstateDefinition(string Name, string Owner, Guid? OwnerUuid
 ///     Owner = Test User
 ///     OwnerUUID = …               ; standalone: the account OpenSim creates
 ///     OwnerEmail =
+/// [Schedule]                      ; optional: 'osctl schedule …'
+///     Restart = Sun 04:00
+///     WarnMinutes = 10
+///     Backup = *-*-* 03:00
+/// [Backups]                       ; optional
+///     Iar = Test User, Other Person
+///     KeepDaily = 7
+///     KeepWeekly = 4
 /// </code>
 /// </summary>
-public sealed partial record InstanceDefinition(string Name, string Build, string ConfigSet, DatabaseKind Database, EstateDefinition Estate)
+public sealed partial record InstanceDefinition(
+    string Name,
+    string Build,
+    string ConfigSet,
+    DatabaseKind Database,
+    EstateDefinition Estate,
+    InstanceSchedule? Schedule = null,
+    InstanceBackups? Backups = null)
 {
+    public InstanceSchedule Scheduled => Schedule ?? InstanceSchedule.None;
+
+    public InstanceBackups BackupOptions => Backups ?? InstanceBackups.None;
+
     public static InstanceDefinition Load(string path, string name)
     {
         var doc = IniParser.ParseFile(path);
@@ -52,13 +89,29 @@ public sealed partial record InstanceDefinition(string Name, string Build, strin
         if (estate["OwnerUUID"] is { Length: > 0 } text)
             uuid = Guid.TryParse(text, out var g) ? g : throw new OsctlException($"{path}: [Estate] OwnerUUID = {text} is not a UUID");
 
+        int? Number(IniSection? s, string key, int max)
+        {
+            if (s?.GetEntry(key) is not { Value.Length: > 0 } entry)
+                return null;
+            return int.TryParse(entry.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n <= max ? n
+                : throw new OsctlException($"{path}: [{s.Name}] {key} = {entry.Value}: expected a whole number from 0 to {max}");
+        }
+        string? Text(IniSection? s, string key) => s?[key] is { Length: > 0 } v ? v : null;
+
+        var schedule = doc["Schedule"];
+        var backups = doc["Backups"];
+        var iar = (Text(backups, "Iar") ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(CheckOwner).ToList();
+
         return new InstanceDefinition(
             name,
             Names.Check(Required(head, "Build"), "build"),
             Names.Check(Required(head, "ConfigSet"), "config set"),
             database,
             new EstateDefinition(Required(estate, "Name"), CheckOwner(Required(estate, "Owner")), uuid,
-                estate["OwnerEmail"] is { Length: > 0 } email ? email : null));
+                estate["OwnerEmail"] is { Length: > 0 } email ? email : null),
+            new InstanceSchedule(Text(schedule, "Restart"), Number(schedule, "WarnMinutes", 24 * 60), Text(schedule, "Backup")),
+            new InstanceBackups(iar, Number(backups, "KeepDaily", 1000), Number(backups, "KeepWeekly", 1000)));
     }
 
     public IniDocument ToIni()
@@ -71,6 +124,19 @@ public sealed partial record InstanceDefinition(string Name, string Build, strin
         doc.Set("Estate", "Owner", Estate.Owner);
         doc.Set("Estate", "OwnerUUID", Estate.OwnerUuid?.ToString() ?? "");
         doc.Set("Estate", "OwnerEmail", Estate.OwnerEmail ?? "");
+
+        void Optional(string section, string key, string? value)
+        {
+            if (!string.IsNullOrEmpty(value))
+                doc.Set(section, key, value);
+        }
+        string? N(int? n) => n?.ToString(CultureInfo.InvariantCulture);
+        Optional("Schedule", "Restart", Scheduled.Restart);
+        Optional("Schedule", "WarnMinutes", N(Scheduled.WarnMinutes));
+        Optional("Schedule", "Backup", Scheduled.Backup);
+        Optional("Backups", "Iar", string.Join(", ", BackupOptions.IarUsers));
+        Optional("Backups", "KeepDaily", N(BackupOptions.KeepDaily));
+        Optional("Backups", "KeepWeekly", N(BackupOptions.KeepWeekly));
         return doc;
     }
 

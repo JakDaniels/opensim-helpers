@@ -19,6 +19,18 @@ public interface IRemoteAdmin
 
     /// <summary>Sends a message to everyone in the instance's regions.</summary>
     Task<bool> BroadcastAsync(int port, string password, string message, CancellationToken ct);
+
+    /// <summary>
+    /// Starts saving a region's OAR to <paramref name="file"/> (admin_save_oar). OpenSim answers after at most 5 s,
+    /// finished or not: the log says when it is done. Null when accepted, else why not.
+    /// </summary>
+    Task<string?> SaveOarAsync(int port, string password, string region, string file, CancellationToken ct);
+
+    /// <summary>
+    /// Runs a console command (admin_console_command). Unlike typing it into the console, the command is not echoed,
+    /// logged or kept in the history, so it may hold a password. Null when accepted, else why not.
+    /// </summary>
+    Task<string?> ConsoleCommandAsync(int port, string password, string command, CancellationToken ct);
 }
 
 /// <summary>
@@ -42,6 +54,39 @@ public sealed class HttpRemoteAdmin : IRemoteAdmin
 
     public Task<bool> BroadcastAsync(int port, string password, string message, CancellationToken ct) =>
         CallAsync(port, "admin_broadcast", new Dictionary<string, string> { ["password"] = password, ["message"] = message }, ct);
+
+    public Task<string?> SaveOarAsync(int port, string password, string region, string file, CancellationToken ct) =>
+        CallForErrorAsync(port, "admin_save_oar",
+            new Dictionary<string, string> { ["password"] = password, ["region_name"] = region, ["filename"] = file }, ct);
+
+    public Task<string?> ConsoleCommandAsync(int port, string password, string command, CancellationToken ct) =>
+        CallForErrorAsync(port, "admin_console_command", new Dictionary<string, string> { ["password"] = password, ["command"] = command }, ct);
+
+    /// <summary>
+    /// Why a reply says the call failed, or null if it does not. RemoteAdmin only reports failures (a fault, or
+    /// success/accepted/saved false with an error); a method that worked may answer an empty struct.
+    /// </summary>
+    public static string? Failure(string reply)
+    {
+        try
+        {
+            var xml = XDocument.Parse(reply);
+            if (xml.Descendants("fault").Any())
+                return "RemoteAdmin answered with a fault: " + string.Join(" ", xml.Descendants("fault").Descendants("string").Select(e => e.Value));
+            var members = xml.Descendants("member")
+                .Where(m => m.Element("name") is not null)
+                .ToDictionary(m => m.Element("name")!.Value, m => m.Element("value")?.Value.Trim() ?? "");
+            var failed = new[] { "success", "accepted", "saved" }
+                .Any(k => members.TryGetValue(k, out var v) && v.ToLowerInvariant() is "0" or "false");
+            if (!failed)
+                return null;
+            return members.TryGetValue("error", out var error) && error.Length > 0 ? error : "RemoteAdmin refused";
+        }
+        catch (System.Xml.XmlException)
+        {
+            return "RemoteAdmin's answer is not XML-RPC";
+        }
+    }
 
     public static string Request(string method, IReadOnlyDictionary<string, string> members)
     {
@@ -77,6 +122,23 @@ public sealed class HttpRemoteAdmin : IRemoteAdmin
         catch (System.Xml.XmlException)
         {
             return false;
+        }
+    }
+
+    private static async Task<string?> CallForErrorAsync(int port, string method, IReadOnlyDictionary<string, string> members, CancellationToken ct)
+    {
+        try
+        {
+            using var content = new StringContent(Request(method, members), Encoding.UTF8, "text/xml");
+            // admin_save_oar holds the reply for up to 5 s while the save starts.
+            using var response = await Client.PostAsync($"http://127.0.0.1:{port}/", content, ct);
+            if (!response.IsSuccessStatusCode)
+                return $"RemoteAdmin answered HTTP {(int)response.StatusCode}";
+            return Failure(await response.Content.ReadAsStringAsync(ct));
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            return $"RemoteAdmin on port {port} did not answer ({e.Message})";
         }
     }
 
