@@ -59,6 +59,15 @@ public sealed record SupervisorSettings(SupervisorMode Mode = SupervisorMode.Sys
 /// </summary>
 public sealed record RunSettings(string Command = "dotnet OpenSim.dll");
 
+/// <summary>
+/// Backups (PLAN.md "Backups and scheduled restarts"): where they go (default: each instance's backups/ directory;
+/// otherwise &lt;Dir&gt;/&lt;instance&gt;/), how many to keep, and how long one OAR or IAR save may take.
+/// </summary>
+public sealed record BackupSettings(string? Dir = null, int KeepDaily = 7, int KeepWeekly = 4, int SaveTimeoutMinutes = 60);
+
+/// <summary>Scheduled restarts: how long before one the people in the regions are warned, unless the instance says.</summary>
+public sealed record ScheduleSettings(int WarnMinutes = 10);
+
 /// <summary>The system account and group that run the instances.</summary>
 public sealed record AccountSettings(string User = "opensim", string Group = "opensim");
 
@@ -72,9 +81,11 @@ public sealed record OsctlSettings(
     DefaultSettings Defaults,
     AccountSettings Account,
     SupervisorSettings Supervisor,
-    RunSettings Run)
+    RunSettings Run,
+    BackupSettings Backups,
+    ScheduleSettings Schedule)
 {
-    public static OsctlSettings Default { get; } = new(new(), new(), new(), new(), new(), new(), new(), new(), new());
+    public static OsctlSettings Default { get; } = new(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new());
 }
 
 /// <summary>The settings, plus what was odd about the files (unknown keys, missing files).</summary>
@@ -141,13 +152,22 @@ public static class SettingsLoader
         });
         var run = new RunSettings(s.String("Run", "Command", d.Run.Command));
 
+        var backups = new BackupSettings(
+            s.OptionalString("Backups", "Dir"),
+            s.Int("Backups", "KeepDaily", d.Backups.KeepDaily, 0, 1000),
+            s.Int("Backups", "KeepWeekly", d.Backups.KeepWeekly, 0, 1000),
+            s.Int("Backups", "SaveTimeoutMinutes", d.Backups.SaveTimeoutMinutes, 1, 24 * 60));
+        if (backups.Dir is { } backupDir && !Path.IsPathRooted(backupDir))
+            throw new SettingsException($"{paths.SettingsFile}: [Backups] Dir = {backupDir}: expected an absolute path");
+        var schedule = new ScheduleSettings(s.Int("Schedule", "WarnMinutes", d.Schedule.WarnMinutes, 0, 24 * 60));
+
         if (settingsDoc.Get("Database", "AdminPassword") is not null || settingsDoc.Get("Database", "Password") is not null)
             warnings.Add($"{paths.SettingsFile}: database passwords belong in {paths.SecretsFile}; they are ignored here");
 
         s.WarnAboutUnknownKeys(paths.SettingsFile);
         secrets.WarnAboutUnknownKeys(paths.SecretsFile);
 
-        return new SettingsLoadResult(new OsctlSettings(ports, timeouts, restart, tmux, database, defaults, account, supervisor, run), found, warnings);
+        return new SettingsLoadResult(new OsctlSettings(ports, timeouts, restart, tmux, database, defaults, account, supervisor, run, backups, schedule), found, warnings);
     }
 
     /// <summary>Reads typed values and remembers which keys were used, so typos can be reported.</summary>

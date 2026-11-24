@@ -22,9 +22,9 @@ internal static class RunCommands
         Lifecycle(env, globals, "start", "Start instances (all when none are named) and wait until they are ready",
             (s, name, _, ct) => s.StartAsync(name, ct), "started"),
         Lifecycle(env, globals, "stop", "Stop instances (all when none are named), shutting OpenSim down cleanly",
-            (s, name, force, ct) => s.StopAsync(name, force, ct), "stopped", withForce: true),
+            (s, name, force, ct) => s.StopAsync(name, force, ct), "stopped", withForce: true, warnVerb: "shut down"),
         Lifecycle(env, globals, "restart", "Restart instances (all when none are named)",
-            (s, name, _, ct) => s.RestartAsync(name, ct), "restarted"),
+            (s, name, _, ct) => s.RestartAsync(name, ct), "restarted", warnVerb: "restart"),
         Boot(env, globals, enable: true),
         Boot(env, globals, enable: false),
         Status(env, globals),
@@ -62,19 +62,67 @@ internal static class RunCommands
     }
 
     private static Command Lifecycle(CliEnvironment env, GlobalOptions globals, string verb, string description,
-        Func<ISupervisor, string, bool, CancellationToken, Task> action, string done, bool withForce = false)
+        Func<ISupervisor, string, bool, CancellationToken, Task> action, string done, bool withForce = false, string? warnVerb = null)
     {
         var names = Names("The instances");
         var force = new Option<bool>("--force") { Description = "Kill OpenSim straight away instead of shutting it down" };
+        var warn = new Option<string?>("--warn")
+        {
+            Description = "Warn the people in the regions this long before (e.g. 10m), again at 5 and 1 minutes; running instances only",
+        };
+        var scheduled = new Option<bool>("--scheduled")
+        {
+            Description = "What the restart timer runs: running instances only, warned as instance.ini [Schedule] WarnMinutes says",
+        };
         var command = new Command(verb, description) { names };
         if (withForce)
             command.Add(force);
+        if (warnVerb is not null)
+            command.Add(warn);
+        if (verb == "restart")
+            command.Add(scheduled);
         CliApp.SetAction(command, env, async (parse, ct) =>
         {
+            var settings = globals.Settings(parse);
             var store = new InstanceStore(globals.Paths(parse));
             var supervisor = Supervisor(env, globals, parse);
+            var selected = Selected(store, parse.GetValue(names));
+            var isScheduled = parse.GetValue(scheduled);
+            var warning = parse.GetValue(warn) is { } text ? Operations.Durations.Parse(text) : (TimeSpan?)null;
+
+            if (warnVerb is not null && (warning is not null || isScheduled))
+            {
+                // Only running instances have anyone to warn; a scheduled restart leaves stopped instances stopped.
+                var running = new List<string>();
+                foreach (var name in selected)
+                {
+                    if ((await supervisor.StatusAsync(name, ct)).State == InstanceState.Running)
+                        running.Add(name);
+                    else if (isScheduled)
+                        await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
+                }
+                if (isScheduled)
+                    selected = running;
+
+                // Instances warned for the same time are counted down together; different times run side by side.
+                var groups = running
+                    .GroupBy(n => warning ?? TimeSpan.FromMinutes(store.Load(n).Scheduled.WarnMinutes ?? settings.Schedule.WarnMinutes))
+                    .Where(g => g.Key > TimeSpan.Zero)
+                    .ToList();
+                if (globals.IsDryRun(parse))
+                {
+                    foreach (var group in groups)
+                        await env.Out.WriteLineAsync($"would warn {string.Join(", ", group)} {Operations.Durations.Words(group.Key)} before they {warnVerb}");
+                }
+                else
+                {
+                    var countdown = new Operations.Countdown(store, env.Admin, env.Clock, TextWriter.Synchronized(env.Out));
+                    await Task.WhenAll(groups.Select(g => countdown.RunAsync([.. g], g.Key, warnVerb, ct)));
+                }
+            }
+
             var failures = 0;
-            foreach (var name in Selected(store, parse.GetValue(names)))
+            foreach (var name in selected)
             {
                 if (verb == "start" && store.Regions(name).Count == 0)
                 {
@@ -279,31 +327,54 @@ internal static class RunCommands
 
     private static Command UnitsCommand(CliEnvironment env, GlobalOptions globals)
     {
-        var units = new Command("units", "The systemd unit osctl runs instances with");
+        var units = new Command("units", "The systemd units osctl runs instances, scheduled restarts and backups with");
 
         var user = new Option<bool>("--user") { Description = "Your own systemd user units (~/.config/systemd/user), not the system's" };
-        var install = new Command("install", "Write osctl@.service and reload systemd (system units need root)") { user };
+        var install = new Command("install",
+            "Write osctl@.service, osctl-restart@.service, osctl-backup@.service and the instances' timers, then reload systemd (system units need root)")
+        { user };
         CliApp.SetAction(install, env, async (parse, ct) =>
         {
             var paths = globals.Paths(parse);
             var settings = globals.Settings(parse);
             var isUser = parse.GetValue(user);
-            var text = Units.Template(settings, paths, isUser, isUser || !File.Exists("/usr/bin/osctl") ? env.Self : ["/usr/bin/osctl"]);
-            var dir = isUser
-                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "systemd", "user")
-                : "/etc/systemd/system";
-            var file = Path.Combine(dir, "osctl@.service");
+            IReadOnlyList<string> self = isUser || !File.Exists("/usr/bin/osctl") ? env.Self : ["/usr/bin/osctl"];
+            var dir = env.UnitDir(isUser);
+            var files = new Dictionary<string, string>
+            {
+                ["osctl@.service"] = Units.Template(settings, paths, isUser, self),
+                [Operations.Schedules.ServiceName(Operations.ScheduledJob.Restart)] =
+                    Operations.Schedules.Service(Operations.ScheduledJob.Restart, settings, paths, isUser, self),
+                [Operations.Schedules.ServiceName(Operations.ScheduledJob.Backup)] =
+                    Operations.Schedules.Service(Operations.ScheduledJob.Backup, settings, paths, isUser, self),
+            };
+            var store = new InstanceStore(paths);
+            var instances = store.Names().Select(store.Load).ToList();
             if (globals.IsDryRun(parse))
             {
-                await env.Out.WriteLineAsync($"would write {file}:");
-                await env.Out.WriteAsync(text);
+                foreach (var (name, text) in files)
+                {
+                    await env.Out.WriteLineAsync($"would write {Path.Combine(dir, name)}:");
+                    await env.Out.WriteAsync(text);
+                }
+                foreach (var instance in instances)
+                {
+                    foreach (var job in Enum.GetValues<Operations.ScheduledJob>())
+                    {
+                        if (Operations.Schedules.Calendar(instance.Scheduled, job) is { } calendar)
+                            await env.Out.WriteLineAsync($"would write {Path.Combine(dir, Operations.Schedules.TimerName(job, instance.Name))} (OnCalendar={calendar})");
+                    }
+                }
                 return 0;
             }
             Directory.CreateDirectory(dir);
-            await File.WriteAllTextAsync(file, text, ct);
-            var reload = await env.Runner.RunAsync("systemctl", [.. isUser ? ["--user"] : Array.Empty<string>(), "daemon-reload"],
-                Processes.ProcessRunOptions.Change, ct);
-            await env.Out.WriteLineAsync($"Wrote {file}{(reload.Succeeded ? " and reloaded systemd" : $"; systemctl daemon-reload failed: {reload.StandardError.Trim()}")}.");
+            foreach (var (name, text) in files)
+                await File.WriteAllTextAsync(Path.Combine(dir, name), text, ct);
+            // Writes the timers, removes those of schedules that are gone, reloads systemd and enables them.
+            var report = await Operations.Schedules.InstallTimersAsync(env.Runner, dir, isUser, instances, removeOthers: true, ct);
+            await env.Out.WriteLineAsync($"Wrote {string.Join(", ", files.Keys)} in {dir} and reloaded systemd.");
+            foreach (var line in report)
+                await env.Out.WriteLineAsync("    " + line);
 
             var wanted = isUser ? SupervisorMode.SystemdUser : SupervisorMode.Systemd;
             if (settings.Supervisor.Mode != wanted && File.Exists(paths.SettingsFile))
@@ -319,15 +390,27 @@ internal static class RunCommands
         var showUser = new Option<bool>("--user") { Description = "The user unit" };
         var program = new Option<string?>("--program") { Description = "The osctl the unit runs (default: this one, or /usr/bin/osctl)" };
         var defaults = new Option<bool>("--defaults") { Description = "Use osctl's built-in settings and root /, not this machine's (the package build)" };
-        var show = new Command("show", "Print the unit osctl would install (the package build writes its unit this way)") { showUser, program, defaults };
+        var which = new Option<string>("--unit")
+        {
+            Description = "Which unit: instance (osctl@.service), restart (osctl-restart@.service) or backup (osctl-backup@.service)",
+            DefaultValueFactory = _ => "instance",
+        };
+        which.AcceptOnlyFromAmong("instance", "restart", "backup");
+        var show = new Command("show", "Print a unit osctl would install (the package build writes its units this way)") { showUser, program, defaults, which };
         CliApp.SetAction(show, env, async (parse, _) =>
         {
             var isUser = parse.GetValue(showUser);
             IReadOnlyList<string> self = parse.GetValue(program) is { } given ? [given]
                 : isUser || !File.Exists("/usr/bin/osctl") ? env.Self : ["/usr/bin/osctl"];
             var builtIn = parse.GetValue(defaults);
-            await env.Out.WriteAsync(Units.Template(builtIn ? OsctlSettings.Default : globals.Settings(parse),
-                builtIn ? new OsctlPaths("/") : globals.Paths(parse), isUser, self));
+            var settings = builtIn ? OsctlSettings.Default : globals.Settings(parse);
+            var paths = builtIn ? new OsctlPaths("/") : globals.Paths(parse);
+            await env.Out.WriteAsync(parse.GetValue(which) switch
+            {
+                "restart" => Operations.Schedules.Service(Operations.ScheduledJob.Restart, settings, paths, isUser, self),
+                "backup" => Operations.Schedules.Service(Operations.ScheduledJob.Backup, settings, paths, isUser, self),
+                _ => Units.Template(settings, paths, isUser, self),
+            });
             return 0;
         });
 

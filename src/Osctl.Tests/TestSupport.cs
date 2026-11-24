@@ -55,6 +55,9 @@ internal sealed class FakeRunner : IProcessRunner
 
     public List<ProcessRunOptions?> Options { get; } = [];
 
+    /// <summary>Runs before the tables: a result answers the call; null leaves it to the tables.</summary>
+    public Func<string, IReadOnlyList<string>, ProcessResult?>? Handler { get; set; }
+
     public Task<ProcessResult> RunAsync(
         string program,
         IReadOnlyList<string> arguments,
@@ -64,6 +67,8 @@ internal sealed class FakeRunner : IProcessRunner
         var line = string.Join(' ', [program, .. arguments]);
         Calls.Add(line);
         Options.Add(options);
+        if (Handler?.Invoke(program, arguments) is { } handled)
+            return Task.FromResult(handled);
         if (answers.TryGetValue(line, out var result))
             return Task.FromResult(result);
         var prefixed = prefixes.FirstOrDefault(p => line.StartsWith(p.Prefix, StringComparison.Ordinal));

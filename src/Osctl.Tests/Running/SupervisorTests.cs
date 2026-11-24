@@ -142,6 +142,15 @@ public class ConsoleAndRemoteAdminTests
         Assert.True(HttpRemoteAdmin.Succeeded("<methodResponse><params><param><value><struct><member><name>success</name><value><boolean>true</boolean></value></member></struct></value></param></params></methodResponse>"));
         Assert.False(HttpRemoteAdmin.Succeeded("<methodResponse><fault><value><struct/></value></fault></methodResponse>"));
         Assert.False(HttpRemoteAdmin.Succeeded("not xml"));
+
+        // Methods that report only failures: an empty struct is success.
+        static string Reply(string members) => $"<methodResponse><params><param><value><struct>{members}</struct></value></param></params></methodResponse>";
+        Assert.Null(HttpRemoteAdmin.Failure(Reply("")));
+        Assert.Null(HttpRemoteAdmin.Failure(Reply("<member><name>saved</name><value><boolean>1</boolean></value></member>")));
+        Assert.Equal("Region Nowhere not found", HttpRemoteAdmin.Failure(Reply(
+            "<member><name>success</name><value><boolean>0</boolean></value></member><member><name>error</name><value><string>Region Nowhere not found</string></value></member>")));
+        Assert.Equal("RemoteAdmin refused", HttpRemoteAdmin.Failure(Reply("<member><name>accepted</name><value><boolean>0</boolean></value></member>")));
+        Assert.NotNull(HttpRemoteAdmin.Failure("not xml"));
     }
 
     [Fact]

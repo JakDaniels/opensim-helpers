@@ -96,9 +96,10 @@ osctl console <name>                 attach to the tmux console (Ctrl-a d to lea
 osctl cmd <name> "<console command>" type a command into the tmux console and print its output
 osctl logs <name> [-f]
 osctl config show <name> [--section S…] | explain <name> <Section> <Key> | diff <name>
-osctl visitors [<name>…] [--since DATE] [--csv|--json]
-osctl backup <name> [--oar] [--iar USER] [--db] ; osctl backup list|prune
-osctl schedule restart <name> "OnCalendar spec" [--warn 10m] ; osctl schedule backup …
+osctl visitors [<name>…] [--since DATE|7d] [--csv|--json]
+osctl backup create [<name>…] [--oar] [--db] [--iar USER]… [--scheduled] ; osctl backup list|prune|iar-password
+osctl schedule restart <name> "OnCalendar spec" [--warn 10m] ; schedule backup <name> "spec" [--iar U] ; remove|list
+osctl restart|stop [<name>…] --warn 10m   in-world countdown first; restart --scheduled is what the timer runs
 osctl run <name> [--foreground]      what the systemd unit runs; not usually called by hand
 ```
 
@@ -326,11 +327,50 @@ hard-link files unchanged from the previous release to save space.
 
 ## Backups and scheduled restarts
 
-- OAR per region through RemoteAdmin (`admin_save_oar`), waiting for completion; IAR via a console command
-  (needs care: it wants the user's password, to be checked); DB dumps with `mariadb-dump` or SQLite's online
-  backup. Stored under `instances/<name>/backups/` (or a configured path) with retention (`keep daily/weekly`).
-- Timers: `osctl-restart@<name>.timer` and `osctl-backup@<name>.timer`, `OnCalendar` from `instance.ini`. A
-  scheduled restart broadcasts a warning in-world (RemoteAdmin `admin_broadcast`) N minutes before.
+Done in phase 5 (`src/Osctl/Operations/`, `Cli/OperationsCommands.cs`). Decided (2026-11-24): a scheduled backup
+holds OARs + databases (+ IARs of users named in `instance.ini`); retention 7 daily + 4 weekly; the restart warning
+counts down (warning time, 5 min, 1 min); in direct mode `osctl schedule` prints crontab lines.
+
+- **Layout:** one directory per backup, `<backups root>/<yyyyMMdd-HHmmss>` (local time), `.partial` while being
+  made, with `backup.ini` listing each file and its error, if any. The root is the instance's `backups/`, or
+  `[Backups] Dir/<instance>`.
+- **OAR**, one per region: RemoteAdmin `admin_save_oar` (`region_name`, `filename`). It answers after at most 5 s
+  whether or not the save is done (RemoteAdminPlugin waits on a monitor for 5 s), so osctl waits for
+  `[ARCHIVER]: Finished writing out OAR for <region>` in OpenSim.log (logged on success and failure alike), watches
+  for RADMIN's "Saving of OAR file … failed", then reads the file through gzip + tar to its end to check it.
+- **IAR:** `save iar First Last / "password" "file"` sent with RemoteAdmin `admin_console_command`. Unlike a command
+  typed into the tmux console, that is not echoed, logged or kept in the console history, so the password stays
+  out of every log. Done when `[INVENTORY ARCHIVER]: Saved archive with N items for First Last`; failures: "Failed
+  to find user info", "Password for user … incorrect", "Archive save for … failed". Passwords: the instance's
+  `secrets.ini` `[IAR] First Last = …` (`osctl backup iar-password`), else the estate owner's on a standalone.
+- **Databases:** MariaDB: `mariadb-dump` of the instance's and the grid's estate database (credentials in a 0600
+  temporary file); SQLite: `sqlite3 <file> ".backup …"` of each SQLite file in `data/` (online, consistent while
+  OpenSim writes). Both gzipped. The `sqlite3` program, not Microsoft.Data.Sqlite: its native library does not fit
+  the single-file package. The package recommends `sqlite3`; `osctl doctor` checks it.
+- **Not running:** OARs and IARs are skipped (OpenSim writes them); the databases hold everything.
+- **Pruning:** of the complete backups, keep the newest, and the newest of each of the last `KeepDaily` days and
+  `KeepWeekly` ISO weeks that have one; an incomplete backup goes once a newer complete one exists.
+- **Warnings:** `osctl restart|stop --warn 10m` broadcasts (`admin_broadcast`) at the warning time and at 5 and
+  1 minutes before, to running instances only; instances with different warning times count down side by side.
+- **Timers:** `instance.ini [Schedule] Restart/Backup` (systemd calendar expressions, checked with
+  `systemd-analyze calendar`) become `osctl-restart@<name>.timer` / `osctl-backup@<name>.timer`, which start the
+  template services `osctl-restart@.service` (`osctl restart --scheduled %i`: running instances only, warned by
+  `[Schedule] WarnMinutes`) and `osctl-backup@.service` (`osctl backup create --scheduled %i`: full backup, then
+  prune). Both Type=oneshot, no start time limit, as `opensim`. The services come with the package (and
+  `units install`); the timers are per instance. Writing a timer to /etc/systemd/system and `daemon-reload` need
+  root, so in system mode `osctl schedule` saves instance.ini and, if it cannot write there, says to run
+  `sudo osctl units install`, which writes every instance's timers and removes those of schedules that are gone.
+  `systemd-user` needs no root. `direct`: crontab lines (`schedule list --cron`) for the simple calendar forms.
+- **Visitors:** MIOS's lines ("Found presence", "authenticated and authorized incoming root agent") are gone from
+  OpenSim. Today: `[SCENE PRESENCE]: Complete movement of <name> into <region> <pos>` (INFO) for every arrival
+  (login, teleport, crossing), `[SCENE]: Incoming client <name> in region <region> via regular|HG login` (DEBUG)
+  just before it for logins, `[LLOGIN SERVICE]: Login request for <name> at … IP <ip>,` for the address. Read
+  from OpenSim.log and its rotated copies (OpenSim.log.*, .gz too).
+
+Tried against OpenSim (the sas-dev SQLite standalone, direct mode): two OARs, the owner's IAR and eight SQLite files
+in 12 s; a wrong IAR password reported; no password in any log; `restart --warn 70s` broadcast in-world at 70 s and
+1 min, then restarted; `visitors` on the SpatialAudioServer test standalone's log (118 arrivals). Not yet tried:
+the timers under system systemd (the opensim user restarting through polkit) and MariaDB dumps.
 
 ## Robust and local grids (phase 6)
 
@@ -407,7 +447,7 @@ whenever one is published, signed with the key in `packaging/signing-key.asc` (i
    readiness, RemoteAdmin. First real goal: the SpatialAudioServer test standalone run by osctl.
 4. **Packaging**: .deb (x64, arm64), `opensim` user, polkit rule, tmpfiles, units; CI and release workflows as
    in SpatialAudioServer. (CI for tests starts in phase 0; this phase adds packages and releases.)
-5. **Operations**: visitors, backups, scheduled restarts with warnings.
+5. **Operations** (done): visitors, backups, scheduled restarts with warnings; `region get`.
 6. **Robust and local grids.**
 7. **Stats and web UI.**
 

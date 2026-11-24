@@ -9,12 +9,19 @@ backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10
 source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
 
 ## Where we are
-- Phase 4 (packaging) under way: `packaging/linux/` (nfpm.yaml, install scripts, tmpfiles, polkit rule),
-  `scripts/build-packages.sh` (needs nfpm; builds locally), `scripts/test-packages.sh` (CI containers only: no
-  Docker here), workflows `packages.yml`, `drafts.yml`, `release.yml` (copied from SAS), and the apt repository on this
-  repository's own Pages (`pages.yml`, `scripts/build-repos.sh`, key `packaging/signing-key.asc`). The GitHub
-  repository is to be renamed `JakDaniels/opensimtools` (site https://jakdaniels.github.io/opensimtools/). Not yet
-  run on GitHub.
+- Phase 5 (operations) done, not yet released: `src/Osctl/Operations/` (Visitors, BackupStore + BackupRunner,
+  Countdown, Schedules, Durations), `Cli/OperationsCommands.cs`; `restart|stop --warn`, `restart --scheduled`;
+  `units install` also writes `osctl-restart@.service`, `osctl-backup@.service` and every instance's timers.
+  Tried against real OpenSim in the dev root (OARs, IAR, SQLite, warnings, visitors); PLAN.md "Backups and
+  scheduled restarts" has the details and what is not yet tried (system timers via polkit, MariaDB dumps).
+  Also `osctl region get`. Next is phase 6 (Robust and local grids).
+- Phase 4 (packaging) done: `packaging/linux/` (nfpm.yaml, install scripts, tmpfiles, polkit rule),
+  `scripts/build-packages.sh` (needs nfpm), `scripts/test-packages.sh` (CI containers only: no Docker here),
+  workflows `ci.yml`, `packages.yml`, `drafts.yml`, `release.yml`, `pages.yml`. The repository is
+  `JakDaniels/opensimtools`; v0.1.0 released 2026-11-23; signed apt repository at
+  https://jakdaniels.github.io/opensimtools/ (key `packaging/signing-key.asc`, private key only in the secret
+  OPENSIMTOOLS_SIGNING_KEY). Not yet tried by hand: the packaged system unit as opensim, the polkit rule, console
+  sharing between group members, `sudo osctl db init`.
 - Phase 3 (running) done: `src/Osctl/Running/` (InstanceRunner = `osctl run`, InstanceStopper, Supervisor:
   systemd / systemd-user / direct, Tmux, ConsoleCommand, RemoteAdmin), `Cli/RunCommands.cs`. Tried for real with
   OpenSim in direct mode and under systemd user units (then removed). Tests: `Osctl.Tests/Running/` with real tmux
@@ -40,7 +47,8 @@ source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
   `dotnet run --project src/Osctl -- init --root /some/dir`, then `OSCTL_ROOT=/some/dir`.
 - Expected errors: throw `OsctlException` (or the ini/settings exceptions); `CliApp.SetAction` turns them into
   one line on stderr and exit code 2.
-- CI (`ci.yml`) has not run yet: it runs on pull requests, and by hand only once it is on `main`.
+- A development root with a real OpenSim (build sas-dev, instance Test1, SQLite, direct mode, ports 9002/9003)
+  lives in the session scratchpad (`…/scratchpad/devroot`, `OSCTL_ROOT=` it); it may be gone after a reboot.
 
 ## Reference code (outside this repository)
 - OpenSim source: `../opensim` (ConfigurationLoader.cs, Application.cs for the command-line switches).

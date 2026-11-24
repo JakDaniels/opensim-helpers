@@ -17,7 +17,7 @@ It replaces [MIOS](https://github.com/JakDaniels/MIOS), the old PHP scripts. [PL
 with the reasons for each decision.
 
 **Status:** version 0.1. Builds, instances, regions, configuration, databases and running under systemd work.
-Visitor reports, backups, scheduled restarts, Robust (grid services) and a stats page are still to come.
+Robust (grid services) and a stats page are still to come.
 
 ## Contents
 
@@ -29,6 +29,7 @@ Visitor reports, backups, scheduled restarts, Robust (grid services) and a stats
 - [osctl.ini settings](#osctlini-settings)
 - [Typical setups](#typical-setups)
 - [Running instances](#running-instances)
+- [Visitors, backups and scheduled restarts](#visitors-backups-and-scheduled-restarts)
 - [Where things are](#where-things-are)
 - [Upgrading and removing](#upgrading-and-removing)
 - [Command reference](#command-reference)
@@ -40,7 +41,8 @@ Visitor reports, backups, scheduled restarts, Robust (grid services) and a stats
 - **For OpenSim itself:** the .NET 8 SDK, which OpenSim needs to build and to run, and libgdiplus (map tiles and
   textures). The package recommends both, but not every distribution release has .NET 8 in its own archive; see
   [The .NET 8 SDK](#the-net-8-sdk).
-- **A database:** MariaDB (or MySQL) for real instances. SQLite needs nothing extra.
+- **A database:** MariaDB (or MySQL) for real instances. SQLite needs nothing extra, except `sqlite3` for
+  backups (the package recommends it).
 - **osctl itself:** nothing more. osctl carries its own .NET runtime.
 
 ## Installing
@@ -96,7 +98,8 @@ A package installed this way is not upgraded by `apt upgrade`; use the apt repos
   (logs).
 - **Group-shared directories:** all of these belong to the `opensim` group, and only its members (and root) can
   read them.
-- **systemd:** the unit `osctl@.service` (one copy per instance, as `osctl@<instance>.service`), and a polkit rule
+- **systemd:** the unit `osctl@.service` (one copy per instance, as `osctl@<instance>.service`), the services
+  `osctl-restart@.service` and `osctl-backup@.service` that scheduled restarts and backups start, and a polkit rule
   that lets members of the `opensim` group start, stop and restart instances without sudo.
 
 ## After installing
@@ -351,6 +354,10 @@ what you need. An unknown setting is reported by `osctl doctor`, so typos show u
 | `[Account]` | `User`, `Group` | opensim, opensim | The account instances run as, and the group whose members manage them. |
 | `[Supervisor]` | `Mode` | systemd | How instances run: see [Running instances](#running-instances). |
 | `[Run]` | `Command` | `dotnet OpenSim.dll` | What an instance runs in its build's `bin/`; osctl adds its own switches. |
+| `[Backups]` | `Dir` | (none) | Where backups go: each instance's own `backups/` directory, or `<Dir>/<instance>/` if set. |
+| | `KeepDaily`, `KeepWeekly` | 7, 4 | Pruning keeps the newest backup of each of the last this many days and weeks. |
+| | `SaveTimeoutMinutes` | 60 | How long saving one OAR or IAR may take. |
+| `[Schedule]` | `WarnMinutes` | 10 | How long before a scheduled restart people in the regions are warned. |
 
 **Reinstall the unit after some changes:** the systemd unit holds the `[Restart]` and `[Timeouts]` values, so after
 changing them run `sudo osctl units install`.
@@ -441,8 +448,87 @@ Builds and releases:
 - **"Broken":** after more than `MaxRestarts` crashes within `IntervalSeconds`, the instance is left stopped, and
   `osctl status` shows "broken". `osctl start` tries again.
 
+**Warning people first:** `osctl restart --warn 10m <instance>` (and `stop --warn …`) broadcasts a warning
+in-world, again at 5 minutes and 1 minute, then restarts.
+
 **The console** is OpenSim's own, in tmux. Any member of the `opensim` group can attach (`osctl console`) and type
 into it. Everything it shows is also kept in `/var/log/osctl/<instance>/console.log`.
+
+## Visitors, backups and scheduled restarts
+
+### Visitors
+
+`osctl visitors` lists who arrived in which region, and when, from the instances' `OpenSim.log` files (rotated and
+gzipped copies too). Each arrival is a `login` (with the IP address when the login went through this simulator), an
+`hg-login` from another grid, or an `arrival` by teleport or region crossing.
+
+```
+osctl visitors                              every instance
+osctl visitors Test1 --since 7d             the last week (or --since 2026-11-01)
+osctl visitors --csv > visitors.csv         also --json
+```
+
+### Backups
+
+`osctl backup create <instance>` makes one backup directory, named after its start time, holding:
+
+- **an OAR of each region** (objects, terrain, parcels), saved by OpenSim through RemoteAdmin;
+- **the databases:** the instance's and its grid's estate database with `mariadb-dump`, or each SQLite file in its
+  `data/` with `sqlite3` (both gzipped);
+- **IARs** (inventories) of the users listed in `instance.ini` `[Backups] Iar`, or given with `--iar "First Last"`;
+- `backup.ini`, which lists every file and whether it was saved.
+
+OARs and IARs need the instance running, since OpenSim writes them. For a stopped instance only the databases are
+saved, and those hold everything anyway. `--oar`, `--db` and `--iar` choose parts. A backup with a failed part is
+marked incomplete, and the command exits with 1.
+
+**IAR passwords:** OpenSim asks for the user's password to save an inventory. On a standalone, the estate owner's
+password is already known. For anyone else, store it first with
+`osctl backup iar-password <instance> "First Last"`, which asks for it and keeps it in the instance's `secrets.ini`.
+osctl sends it through RemoteAdmin, so it never shows in the console or its logs.
+
+```
+osctl backup create Test1                   OARs, databases, IARs from instance.ini
+osctl backup create Test1 --db              only the databases
+osctl backup list                           every backup, its size, and whether it is complete
+osctl backup prune --dry-run                what pruning would remove
+```
+
+**Pruning** keeps the newest backup, plus the newest of each of the last 7 days and the last 4 weeks that have one.
+Change the numbers with `[Backups] KeepDaily`/`KeepWeekly` in `osctl.ini`, per instance in `instance.ini`, or with
+`--keep-daily`/`--keep-weekly`. An incomplete backup is removed once a newer complete one exists. Scheduled
+backups prune after each run.
+
+### Scheduled restarts and backups
+
+```
+osctl schedule restart Test1 "Sun 04:00" --warn 15m
+osctl schedule backup Test1 "*-*-* 03:00" --iar "Test User" --keep-daily 14
+osctl schedule list                         when, the next run, and the timer's state
+osctl schedule remove Test1 restart
+```
+
+**When:** a systemd calendar expression, for example `Sun 04:00`, `Mon,Thu 05:30`, `*-*-* 03:00` (daily at
+3:00) or `daily`. `systemd-analyze calendar "<expression>"` shows when one fires.
+
+**What runs:**
+
+- A scheduled restart warns people in the regions (at the warning time, then at 5 and 1 minutes), then restarts the
+  instance. An instance that is not running is left alone.
+- A scheduled backup makes a full backup, then prunes old ones.
+
+**How the schedule is stored:** in `instance.ini` `[Schedule]`, plus a systemd timer per job
+(`osctl-restart@<instance>.timer`, `osctl-backup@<instance>.timer`). The timers run as `opensim`.
+
+**Under system systemd, timers need root:** writing them to `/etc/systemd/system` takes root. When you aren't
+root, `osctl schedule` saves the schedule and says to run `sudo osctl units install`, which writes every instance's
+timers.
+
+**Other modes:**
+
+- **`systemd-user`:** the timers are your own and need no root.
+- **`direct`:** there are no timers. `osctl schedule` prints crontab lines instead (`osctl schedule list --cron`
+  prints them again).
 
 ## Where things are
 
@@ -455,7 +541,8 @@ into it. Everything it shows is also kept in `/var/log/osctl/<instance>/console.
 | `/etc/osctl/region-defaults.ini` | Settings every region starts with. |
 | `/etc/osctl/builds/<build>.ini` | Build definitions (also written by `osctl build add`). |
 | `/var/lib/osctl/builds/<build>/` | The source clone, addons, releases, `current` (the release in use), build logs. |
-| `/var/lib/osctl/instances/<instance>/` | `instance.ini`, `secrets.ini`, `overrides/`, `regions/`, `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), script state. |
+| `/var/lib/osctl/instances/<instance>/` | `instance.ini`, `secrets.ini`, `overrides/`, `regions/`, `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), `backups/`, script state. |
+| `/etc/systemd/system/osctl-*@<instance>.timer` | The instances' scheduled restarts and backups (written by `osctl schedule` or `sudo osctl units install`). |
 | `/var/log/osctl/<instance>/` | `OpenSim.log`, `console.log`, console history, crash reports. |
 | `/var/cache/osctl/assets/<grid>/` | The asset cache, one per grid. |
 | `/run/osctl/` | Console sockets and run state while instances run. |
@@ -483,17 +570,20 @@ into it. Everything it shows is also kept in `/var/log/osctl/<instance>/console.
 | `osctl build addon add\|remove` | A build's addon modules. |
 | `osctl configset list\|show\|fetch` | Config sets. |
 | `osctl instance add\|list\|show\|delete` | Instances. |
-| `osctl region add\|list\|remove\|rename\|move\|set` | Regions. `rename` and `move` keep the region's UUID, so its contents stay. |
+| `osctl region add\|list\|remove\|rename\|move\|set\|get` | Regions. `rename` and `move` keep the region's UUID, so its contents stay. |
 | `osctl list` | Every instance with its regions. |
 | `osctl config show\|explain\|diff\|generate` | An instance's generated configuration. |
 | `osctl db init` | Sets up MariaDB (as root). |
-| `osctl start\|stop\|restart [instance…]` | All instances when none is named. `stop --force` kills straight away. |
+| `osctl start\|stop\|restart [instance…]` | All instances when none is named. `stop --force` kills straight away; `--warn 10m` warns people in-world first. |
 | `osctl status [instance…]` | Running, starting, stopped, broken; PID, uptime, release. |
 | `osctl enable\|disable <instance…>` | Start at boot or not (as root). |
 | `osctl console <instance>` | Attaches to the OpenSim console (Ctrl-a d to leave). |
 | `osctl cmd <instance> <command…>` | Runs one console command and prints its output. |
 | `osctl logs <instance> [-f] [-n N] [--console\|--runner]` | The OpenSim log, the console transcript, or osctl's own messages. |
-| `osctl units install [--user]\|show` | The systemd unit. |
+| `osctl visitors [instance…] [--since …] [--csv\|--json]` | Who arrived in the regions, and when. |
+| `osctl backup create\|list\|prune\|iar-password` | Backups: OARs, databases, IARs. |
+| `osctl schedule restart\|backup\|remove\|list` | Scheduled restarts (with warnings) and backups. |
+| `osctl units install [--user]\|show` | The systemd units: instances, and the scheduled jobs' services and timers. |
 
 **Options for every command:**
 

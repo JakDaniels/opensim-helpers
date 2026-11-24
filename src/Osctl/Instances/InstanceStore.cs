@@ -106,6 +106,17 @@ public sealed class InstanceStore(OsctlPaths paths)
     /// <summary>The password RemoteAdmin (localhost only) wants; osctl uses RemoteAdmin to shut down and broadcast.</summary>
     public string? RemoteAdminPassword(string name) => Secret(name, "RemoteAdmin", "Password");
 
+    /// <summary>
+    /// The password an IAR of <paramref name="user"/> needs (OpenSim checks it): secrets.ini [IAR] "First Last",
+    /// or for the estate owner of a standalone, the owner's password.
+    /// </summary>
+    public string? IarPassword(string name, string user) =>
+        Secret(name, "IAR", user) ?? (Load(name).Estate.Owner == user ? OwnerPassword(name) : null);
+
+    /// <summary>Stores the password for an IAR of <paramref name="user"/> in the instance's secrets.ini.</summary>
+    public void SetIarPassword(string name, string user, string password) =>
+        IniFileEditor.SetValue(SecretsFile(name), "IAR", user, password);
+
     private string? Secret(string name, string section, string key) =>
         File.Exists(SecretsFile(name)) && IniParser.ParseFile(SecretsFile(name)).Get(section, key) is { Length: > 0 } value ? value : null;
 

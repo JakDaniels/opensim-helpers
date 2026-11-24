@@ -18,6 +18,7 @@ public class DoctorTests
             "Microsoft.AspNetCore.App 8.0.34 [/x]\nMicrosoft.NETCore.App 8.0.34 [/x]\nMicrosoft.NETCore.App 10.0.15 [/x]\n")
         .Answer("ldconfig -p", "\tlibgdiplus.so.0 (libc6,x86-64) => /lib/libgdiplus.so.0\n")
         .Answer("mariadb --version", "mariadb from 11.8.6-MariaDB\n")
+        .Answer("sqlite3 --version", "3.50.4 2025-07-30\n")
         .Answer("systemctl --version", "systemd 259 (259.9)\n+PAM\n")
         .Answer("getent passwd opensim", "opensim:x:998:998::/var/lib/osctl:/usr/sbin/nologin\n")
         .Answer("id -nG", "someone opensim sudo\n");
@@ -62,9 +63,11 @@ public class DoctorTests
         var runner = HealthyMachine()
             .Answer("ldconfig -p", "\tlibc.so.6\n")
             .Answer("mariadb --version", "", exitCode: 127)
+            .Answer("sqlite3 --version", "", exitCode: 127)
             .Answer("id -nG", "someone sudo\n");
         var results = await Run(runner, dir);
 
+        Assert.Equal(CheckStatus.Warning, Check(results, "sqlite3").Status);
         Assert.Equal(CheckStatus.Warning, Check(results, "libgdiplus").Status);
         Assert.Equal(CheckStatus.Warning, Check(results, "MariaDB client").Status);
         Assert.Equal(CheckStatus.Warning, Check(results, "account").Status);

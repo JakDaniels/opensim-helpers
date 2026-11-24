@@ -30,6 +30,8 @@ test -f /etc/osctl/osctl.ini
 test -f /etc/osctl/configsets/osgrid.ini
 test -f /usr/lib/systemd/system/osctl@.service
 grep -q '^ExecStart=/usr/bin/osctl run %i$' /usr/lib/systemd/system/osctl@.service
+grep -q '^ExecStart=/usr/bin/osctl restart --scheduled %i$' /usr/lib/systemd/system/osctl-restart@.service
+grep -q '^ExecStart=/usr/bin/osctl backup create --scheduled %i$' /usr/lib/systemd/system/osctl-backup@.service
 test -f /usr/share/polkit-1/rules.d/50-osctl.rules
 osctl configset list
 
