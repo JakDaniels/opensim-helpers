@@ -129,6 +129,8 @@ internal static class RunCommands
                     await env.Out.WriteLineAsync($"{name}: no regions, not started");
                     continue;
                 }
+                if (verb is "start" or "restart")
+                    await ConfigWarningsAsync(env, globals, parse, name);
                 await env.Out.WriteAsync($"{verb[..1].ToUpperInvariant()}{verb[1..]}ing {name} … ".Replace("Stoping", "Stopping"));
                 try
                 {
@@ -145,6 +147,25 @@ internal static class RunCommands
             return failures == 0 ? 0 : CliApp.ExitFailure;
         });
         return command;
+    }
+
+    /// <summary>
+    /// The configuration's warnings, shown before an instance starts: under systemd the runner only logs them. A
+    /// configuration that cannot be made is left to the start itself to report.
+    /// </summary>
+    private static async Task ConfigWarningsAsync(CliEnvironment env, GlobalOptions globals, ParseResult parse, string name)
+    {
+        GeneratedConfig generated;
+        try
+        {
+            generated = new ConfigGenerator(globals.Paths(parse), globals.Settings(parse)).Generate(name);
+        }
+        catch (Exception e) when (e is OsctlException or IniParseException or SettingsException)
+        {
+            return;
+        }
+        foreach (var warning in generated.Warnings)
+            await env.Error.WriteLineAsync($"osctl: warning: {warning}");
     }
 
     private static Command Boot(CliEnvironment env, GlobalOptions globals, bool enable)
