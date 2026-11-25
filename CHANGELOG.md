@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.2.1 (2026-11-25)
+
 - osctl: warns (in `config` commands, `start`, `restart` and the runner log) when an instance has SpatialAudioServer
   voice (os-webrtc-sas) but no `StunServers`, without which WebRTC viewers' voice never starts; `start` and `restart`
   now show configuration warnings.
