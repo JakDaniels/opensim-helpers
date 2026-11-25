@@ -100,10 +100,42 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
                 config.RemoveSection(section.Name);
         }
 
+        if (MissesStunServers(config))
+            warnings.Add($"Instance '{name}' has SpatialAudioServer voice (os-webrtc-sas) but no StunServers: WebRTC viewers " +
+                "get an empty STUN list and their voice never starts. Set it in an override, e.g. [Startup] " +
+                "StunServers = stun.l.google.com:19302, stun.cloudflare.com:3478");
+
         return new GeneratedConfig(name, bin, config, RegionsConfig(name, regions), Log4Net(name, bin, warnings), layers, warnings);
     }
 
     /// <summary>Writes the configuration to the instance's generated/ directory.</summary>
+    /// <summary>
+    /// True when the configuration sets up os-webrtc-sas (WebRTC voice enabled, and a [SasWebRtcVoice] section or a
+    /// WebRtcSas voice service) without any STUN servers. OpenSim sends viewers <c>StunServers</c> (from [Const],
+    /// [Startup], [GridInfo] or [SimulatorFeatures]) in the simulator features; with none, WebRTC viewers get an empty
+    /// STUN list, cannot create their connection and never ask for voice.
+    /// </summary>
+    public static bool MissesStunServers(IniDocument config)
+    {
+        var voice = config["WebRtcVoice"];
+        if (voice is null || !IsTrue(voice["Enabled"]))
+            return false;
+        var usesSas = config.Contains("SasWebRtcVoice")
+            || new[] { "SpatialVoiceService", "NonSpatialVoiceService" }
+                .Any(k => voice[k]?.Contains("WebRtcSas", StringComparison.OrdinalIgnoreCase) == true);
+        if (!usesSas)
+            return false;
+        // As OpenSim's Util.GetConfigVarFromSections: the last of these sections that has the key wins, even if empty.
+        var stuns = new[] { "Const", "Startup", "GridInfo", "SimulatorFeatures" }
+            .Select(s => config.Get(s, "StunServers"))
+            .LastOrDefault(v => v is not null);
+        return stuns is null || stuns.Split(',').All(s => string.IsNullOrWhiteSpace(s.Trim('"')));
+    }
+
+    /// <summary>Nini's GetBoolean: true, yes, on or 1, in any case.</summary>
+    private static bool IsTrue(string? value) =>
+        value?.Trim().ToLowerInvariant() is "true" or "yes" or "on" or "1";
+
     public void Write(GeneratedConfig generated)
     {
         var dir = instances.GeneratedDir(generated.Instance);

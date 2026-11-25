@@ -82,6 +82,39 @@ public class ConfigGeneratorTests
         Assert.Contains(g.Warnings, w => w.Contains("Include-Extra is not followed"));
     }
 
+    private const string SasVoice = "[WebRtcVoice]\n    Enabled = true\n    SpatialVoiceService = WebRtcSas.dll:SasVoiceService\n" +
+        "[SasWebRtcVoice]\n    ServerURI = http://10.0.0.5:5000\n";
+
+    [Theory]
+    [InlineData("", false)]                                                          // no voice at all
+    [InlineData(SasVoice, true)]
+    [InlineData(SasVoice + "[SimulatorFeatures]\n    StunServers = \"stun.example.org:3478\"\n", false)]
+    [InlineData(SasVoice + "[Startup]\n    StunServers = stun.example.org:3478\n", false)]
+    [InlineData(SasVoice + "[Startup]\n    StunServers = stun.example.org:3478\n[SimulatorFeatures]\n    StunServers = \"\"\n", true)]   // the last section wins
+    [InlineData("[WebRtcVoice]\n    Enabled = false\n[SasWebRtcVoice]\n    ServerURI = x\n", false)]
+    [InlineData("[WebRtcVoice]\n    Enabled = True\n    SpatialVoiceService = WebRtcJanus.dll:WebRtcJanusService\n", false)]   // not SAS
+    [InlineData("[WebRtcVoice]\n    Enabled = yes\n    NonSpatialVoiceService = WebRtcSas.dll:SasVoiceService\n", true)]
+    public async Task SasVoiceWithoutStunServersIsWarnedAbout(string overrides, bool warned)
+    {
+        using var f = await WithInstance();
+        f.Write("var/lib/osctl/instances/Test1/overrides/50-voice.ini", overrides);
+
+        var g = f.Generator().Generate("Test1");
+
+        Assert.Equal(warned, g.Warnings.Any(w => w.Contains("no StunServers")));
+    }
+
+    [Fact]
+    public async Task StartShowsTheConfigurationWarnings()
+    {
+        using var f = await WithInstance();
+        f.Write("var/lib/osctl/instances/Test1/overrides/50-voice.ini", SasVoice);
+
+        var (_, _, err) = await f.Osctl("--dry-run", "start", "Test1");
+
+        Assert.Contains("osctl: warning: Instance 'Test1' has SpatialAudioServer voice", err);
+    }
+
     [Fact]
     public async Task RegionsGetDefaultsThenModuleFilesThenTheirOwnSettings()
     {
