@@ -27,6 +27,12 @@ public static partial class Posix
     }
 
     /// <summary>
+    /// link(2): a hard link <paramref name="newPath"/> to <paramref name="oldPath"/>. False when it cannot be made
+    /// (another file system, one without hard links, or fs.protected_hardlinks and a file someone else owns).
+    /// </summary>
+    public static bool HardLink(string oldPath, string newPath) => link(oldPath, newPath) == 0;
+
+    /// <summary>
     /// umask(2). osctl runs with 007 (PLAN.md "Packaging"): what one member of the opensim group creates, the others
     /// and the instances (running as opensim) can change; nobody else can read it.
     /// </summary>
@@ -85,6 +91,9 @@ public static partial class Posix
 
     [LibraryImport("libc", EntryPoint = "rename", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int rename(string oldPath, string newPath);
+
+    [LibraryImport("libc", EntryPoint = "link", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int link(string oldPath, string newPath);
 
     [LibraryImport("libc", EntryPoint = "umask")]
     private static partial int umask(int mask);

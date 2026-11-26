@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: a grid's backups now hold its FSAssets asset files too. Each backup hard-links the files the last one has
+  and copies only new ones, checked against their hashes, so a week of backups takes little more than one copy.
 - osctl: no warning about a missing config-include/osslEnable.ini at start; OpenSim ships it only as an example,
   for local OSSL changes.
 

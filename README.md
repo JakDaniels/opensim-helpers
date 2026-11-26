@@ -455,7 +455,7 @@ osctl start Sim1
   account first: a simulator whose owner has none does not start, and says which command makes it.
 - **Assets** are kept as files by FSAssets, not in the database: in the grid instance's `data/fsassets/`, or
   wherever `--assets-dir` (on `grid add` or `grid set`) says. The database holds only their index.
-  `osctl backup create MyGrid --db` saves the database but not these files: back the directory up as well.
+  `osctl backup create MyGrid` saves the files with the database (see [Backups](#backups)).
 - **The default region:** the grid's first region is where new avatars and Hypergrid visitors arrive.
   `osctl grid set MyGrid --default-region <region>` chooses another; restart the grid afterwards.
 - **Starting and stopping:** starting a simulator starts its grid first, `osctl start` starts grids before
@@ -536,7 +536,19 @@ osctl visitors --csv > visitors.csv         also --json
 - **the databases:** the instance's and its grid's estate database with `mariadb-dump`, or each SQLite file in its
   `data/` with `sqlite3` (both gzipped);
 - **IARs** (inventories) of the users listed in `instance.ini` `[Backups] Iar`, or given with `--iar "First Last"`;
+- **for a grid:** its databases, then its asset files in `fsassets/` (FSAssets' `data/`, and in `spool/` any assets
+  not yet written out), running or not;
 - `backup.ini`, which lists every file and whether it was saved.
+
+**A grid's asset files** never change once written, and each is named after its content's SHA-256. So each backup
+hard-links the files the previous backup already has and copies only new ones, checking each against its hash.
+Every backup directory is whole on its own, yet a week of backups takes little more space than one copy.
+`backup list` shows each backup's full size, with how much of it was new. Use `du` for the space on disk, since it
+counts a linked file once. If no hard link can be made, the file is copied. A new file that does not match its hash
+is most likely still being written: it is left for the next backup. An older one is copied as it is, with a warning.
+A grid's inventories (IARs) are saved by one of its simulators, not by the grid. To restore a grid, load the
+database dump and copy `fsassets/data/` and `fsassets/spool/*` back into the grid's `data/` and `tmp/` while it is
+stopped.
 
 OARs and IARs need the instance running, since OpenSim writes them. For a stopped instance only the databases are
 saved, and those hold everything anyway. `--oar`, `--db` and `--iar` choose parts. A backup with a failed part is
@@ -549,7 +561,7 @@ osctl sends it through RemoteAdmin, so it never shows in the console or its logs
 
 ```
 osctl backup create Test1                   OARs, databases, IARs from instance.ini
-osctl backup create Test1 --db              only the databases
+osctl backup create Test1 --db              only the databases (for a grid, its asset files too)
 osctl backup list                           every backup, its size, and whether it is complete
 osctl backup prune --dry-run                what pruning would remove
 ```

@@ -347,6 +347,17 @@ counts down (warning time, 5 min, 1 min); in direct mode `osctl schedule` prints
   temporary file); SQLite: `sqlite3 <file> ".backup …"` of each SQLite file in `data/` (online, consistent while
   OpenSim writes). Both gzipped. The `sqlite3` program, not Microsoft.Data.Sqlite: its native library does not fit
   the single-file package. The package recommends `sqlite3`; `osctl doctor` checks it.
+- **A grid (Robust):** its databases, then its FSAssets files as `fsassets/` (decided 2026-11-26: hard-linked
+  snapshots). FSAssets names a file after its asset's SHA-256 (`data/ab/cd/ef/0123/<hash>.gz`) and never changes or
+  removes one, so a file the previous backup has (same path and size) is hard-linked (`link(2)`; copied if that
+  fails), and new files are copied and checked against their hash: each backup is whole, only new assets take space,
+  pruning stays "delete the directory". Order: the database (the index) first, then the spool's `<hash>.asset`
+  files (stored, not yet written out), then `data/`. A file leaves the spool only once it is whole in `data/`, so
+  every indexed asset is in one of the two. A new file that fails its hash and was written since a minute before the
+  start is still being written and is left out; an older one is copied as it is, with a warning. Part of `--db`
+  (the files and their index belong together); `backup.ini [Assets]` keeps the counts. Tried on the dev grid: 423
+  files, 11.5 MiB, in about a second; the next backup linked them all (48 KB on disk); every hash in the dumped
+  index was in the snapshot.
 - **Not running:** OARs and IARs are skipped (OpenSim writes them); the databases hold everything.
 - **Pruning:** of the complete backups, keep the newest, and the newest of each of the last `KeepDaily` days and
   `KeepWeekly` ISO weeks that have one; an incomplete backup goes once a newer complete one exists.
@@ -408,7 +419,7 @@ grid's `DefaultRegion` (without one nobody can log in for the first time; the fi
 becomes it). Its log4net file comes from `Robust.exe.config`. For a simulator on a local grid: `[Const]
 BaseHostname` (the grid's host), `PublicPort` and `PrivatePort` (the grid's), `PrivURL = http://127.0.0.1`.
 
-Running: the same unit, tmux console, `osctl run`, logs, status and backups (database dump; no OAR). Robust runs
+Running: the same unit, tmux console, `osctl run`, logs, status and backups (database dumps and the FSAssets files; no OAR). Robust runs
 `[Run] RobustCommand` (`dotnet Robust.dll`) with `-inifile` and `-logconfig`. It is ready when both its ports
 answer; it is stopped by typing `shutdown` into its console (it has no RemoteAdmin). A simulator on a local grid:
 

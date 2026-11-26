@@ -16,12 +16,13 @@ namespace Osctl.Operations;
 /// <summary>What one backup holds: OARs of every region, the databases, and the inventories (IARs) of some users.</summary>
 public sealed record BackupContents(bool Oars, bool Databases, IReadOnlyList<string> IarUsers);
 
-public sealed record BackupResult(string Dir, bool Complete, IReadOnlyList<BackupItem> Items);
+public sealed record BackupResult(string Dir, bool Complete, IReadOnlyList<BackupItem> Items, AssetCounts? Assets = null);
 
 /// <summary>
 /// <c>osctl backup create</c> (PLAN.md "Backups and scheduled restarts"). OARs and IARs are written by OpenSim
 /// itself, so the instance must be running; RemoteAdmin starts each save and OpenSim.log says when it is done.
 /// Databases: mariadb-dump, or sqlite3's online .backup of each SQLite file in the instance's data/; gzipped.
+/// A grid's Robust: its databases, then its FSAssets files (<see cref="AssetSnapshot"/>), running or not.
 /// </summary>
 public sealed partial class BackupRunner(
     OsctlPaths paths,
@@ -52,7 +53,9 @@ public sealed partial class BackupRunner(
         var port = ConfigGenerator.BasePort(instances.Regions(name));
         var adminPassword = instances.RemoteAdminPassword(name);
 
-        if ((contents.Oars && instances.Regions(name).Count > 0) || contents.IarUsers.Count > 0)
+        if (instance.IsRobust && contents.IarUsers.Count > 0)
+            items.Add(new BackupItem("-", "iar", "a grid's inventories are saved by one of its simulators: 'osctl backup create <simulator> --iar …'"));
+        else if ((contents.Oars && instances.Regions(name).Count > 0) || contents.IarUsers.Count > 0)
         {
             if (!running)
                 await progress.WriteLineAsync($"{name}: not running, so no OARs or IARs (OpenSim writes them); the databases hold everything");
@@ -73,9 +76,17 @@ public sealed partial class BackupRunner(
         if (contents.Databases)
             items.AddRange(instance.Database == DatabaseKind.MariaDb ? await MariaDbAsync(instance, partial, ct) : await SqliteAsync(name, partial, ct));
 
-        BackupStore.WriteManifest(partial, name, started, time.GetUtcNow(), items);
+        // After the database, which is FSAssets' index (AssetSnapshot says why).
+        AssetCounts? assets = null;
+        if (contents.Databases && instance.IsRobust)
+        {
+            (assets, var item) = await AssetsAsync(instance, partial, started, ct);
+            items.Add(item);
+        }
+
+        BackupStore.WriteManifest(partial, name, started, time.GetUtcNow(), items, assets);
         Directory.Move(partial, dir);
-        return new BackupResult(dir, items.All(i => i.Ok), items);
+        return new BackupResult(dir, items.All(i => i.Ok), items, assets);
     }
 
     /// <summary>A file name made from a region or user name.</summary>
@@ -156,6 +167,36 @@ public sealed partial class BackupRunner(
         }
         return items;
     }
+
+    private async Task<(AssetCounts?, BackupItem)> AssetsAsync(InstanceDefinition robust, string dir, DateTimeOffset started, CancellationToken ct)
+    {
+        var source = new ConfigGenerator(paths, settings).AssetsDir(robust);
+        var previous = store.List(robust.Name).Select(b => Path.Combine(b.Dir, AssetSnapshot.Dir))
+            .LastOrDefault(Directory.Exists);
+        await progress.WriteLineAsync($"{robust.Name}: copying the asset files in {source}{(previous is null ? "" : ", linking those the last backup has")} …");
+        try
+        {
+            // Files written in the minute before the start may still be being written by FSAssets.
+            var counts = await Task.Run(() => AssetSnapshot.Take(source, Path.Combine(dir, AssetSnapshot.Dir), previous,
+                started.UtcDateTime - TimeSpan.FromMinutes(1), ct), ct);
+            await progress.WriteLineAsync($"{robust.Name}: {counts.Files} asset files, {counts.Copied} new ({Bytes(counts.CopiedBytes)})"
+                + (counts.Skipped > 0 ? $", {counts.Skipped} still being written left for the next backup" : ""));
+            if (counts.Damaged.Count > 0)
+                await progress.WriteLineAsync($"{robust.Name}: warning: {counts.Damaged.Count} asset file(s) in the grid do not match their hash (copied as they are), e.g. {counts.Damaged[0]}");
+            return (counts, new BackupItem(AssetSnapshot.Dir, "assets", null));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return (null, new BackupItem(AssetSnapshot.Dir, "assets", e.Message));
+        }
+    }
+
+    private static string Bytes(long bytes) => bytes switch
+    {
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KiB",
+        < 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024):0.#} MiB",
+        _ => $"{bytes / (1024.0 * 1024 * 1024):0.##} GiB",
+    };
 
     private async Task<List<BackupItem>> SqliteAsync(string name, string dir, CancellationToken ct)
     {

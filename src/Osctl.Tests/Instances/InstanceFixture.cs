@@ -199,8 +199,12 @@ internal sealed class FakeDatabases : IDatabaseFactory, IDatabaseAdmin, IDatabas
         return Task.CompletedTask;
     }
 
+    /// <summary>Called as each database is dumped.</summary>
+    public Action<string>? OnDump { get; set; }
+
     public Task DumpAsync(string database, string file, CancellationToken ct)
     {
+        OnDump?.Invoke(database);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.WriteAllText(file, $"-- dump of {database}\n");
         return Task.CompletedTask;

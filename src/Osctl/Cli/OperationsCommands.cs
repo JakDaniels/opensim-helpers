@@ -106,7 +106,7 @@ internal static class OperationsCommands
     {
         var names = Names("The instances (default: all)");
         var oar = new Option<bool>("--oar") { Description = "OARs of the regions" };
-        var db = new Option<bool>("--db") { Description = "The databases" };
+        var db = new Option<bool>("--db") { Description = "The databases (and a grid's asset files)" };
         var iar = new Option<string[]>("--iar") { Description = "The inventory of this user (\"First Last\"; repeat for more)", AllowMultipleArgumentsPerToken = false };
         var scheduled = new Option<bool>("--scheduled")
         {
@@ -137,7 +137,7 @@ internal static class OperationsCommands
                     if (contents.Oars)
                         what.Add("OARs");
                     if (contents.Databases)
-                        what.Add("databases");
+                        what.Add(instance.IsRobust ? "databases, asset files" : "databases");
                     what.AddRange(contents.IarUsers.Select(u => $"IAR of {u}"));
                     await env.Out.WriteLineAsync($"would back up {name} ({string.Join(", ", what)}) to {new BackupStore(paths, settings).Root(name)}");
                     continue;
@@ -176,6 +176,7 @@ internal static class OperationsCommands
                 {
                     b.Instance, b.Name, b.Dir, b.Complete, b.Bytes,
                     Items = b.Items.Select(i => new { i.File, i.What, i.Error }),
+                    Assets = b.Assets is { } a ? new { a.Files, a.Copied, a.CopiedBytes, a.Skipped } : null,
                 }), CliApp.Json));
                 return 0;
             }
@@ -188,7 +189,9 @@ internal static class OperationsCommands
                 all.Select(b => (IReadOnlyList<string>)
                 [
                     b.Instance, b.Name, Size(b.Bytes), b.Complete ? "yes" : "NO",
-                    string.Join(", ", b.Items.GroupBy(i => i.What).Select(g => $"{g.Count()} {g.Key}")),
+                    string.Join(", ", b.Items.GroupBy(i => i.What).Select(g => g.Key == "assets" && b.Assets is { } a
+                        ? $"{a.Files} assets ({a.Copied} new, {Size(a.CopiedBytes)})"
+                        : $"{g.Count()} {g.Key}")),
                 ]));
             return 0;
         });
