@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.3.0 (2026-11-26)
+
 - osctl: grids of your own. `osctl grid add` sets up Robust (Hypergrid, groups, offline messages, and assets as
   files with FSAssets) with a config set for its simulators; `osctl user create|password` manage accounts;
   simulators wait for their grid and check their estate owner has an account; the first region becomes the default.
