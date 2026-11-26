@@ -60,6 +60,8 @@ internal static class InstanceCommands
                 throw new OsctlException($"There is no build '{buildName}'; 'osctl build list' shows the builds");
 
             var set = sets.Load(parse.GetValue(configSet) ?? settings.Defaults.ConfigSet);
+            if (set.Mode == ConfigSetMode.Robust)
+                throw new OsctlException($"Config set '{set.Name}' is for a grid's Robust services: 'osctl grid add' makes those");
             var database = InstanceDefinition.ParseDatabase(parse.GetRequiredValue(db))
                 ?? throw new OsctlException("--db: expected mariadb or sqlite");
             var ownerName = InstanceDefinition.CheckOwner(parse.GetRequiredValue(owner).Trim());
@@ -118,6 +120,9 @@ internal static class InstanceCommands
                 await env.Out.WriteLineAsync(
                     $"The estate owner '{ownerName}' will be created with the password {ownerPassword} " +
                     $"(shown once; it is kept in {store.SecretsFile(instanceName)}).");
+            if (set.Robust is { } grid)
+                await env.Out.WriteLineAsync(
+                    $"On grid '{grid}' the estate owner needs an account: osctl user create {grid} \"{ownerName}\" (once, with the grid running).");
             await env.Out.WriteLineAsync($"Next: osctl region add <region> --instance {instanceName} --location <x,y>");
             return 0;
         });
@@ -163,6 +168,12 @@ internal static class InstanceCommands
             await env.Out.WriteLineAsync($"Build:      {info.Build}");
             await env.Out.WriteLineAsync($"Config set: {info.ConfigSet}");
             await env.Out.WriteLineAsync($"Database:   {info.Database}");
+            if (info.Kind == "robust")
+            {
+                await env.Out.WriteLineAsync($"Runs:       Robust, the services of grid '{info.Name}' ('osctl grid show {info.Name}')");
+                await env.Out.WriteLineAsync($"Port:       {info.Port} (public)");
+                return 0;
+            }
             await env.Out.WriteLineAsync($"Estate:     {info.Estate} (owner {info.EstateOwner})");
             await env.Out.WriteLineAsync($"HTTP port:  {(info.Port == 0 ? "- (no regions)" : info.Port.ToString())}");
             await env.Out.WriteLineAsync();
@@ -184,6 +195,10 @@ internal static class InstanceCommands
             var store = new InstanceStore(globals.Paths(parse));
             var instance = store.Load(parse.GetRequiredValue(name));
             var regions = store.Regions(instance.Name);
+            if (instance.IsRobust
+                && new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe).Simulators(instance.Name) is { Count: > 0 } sims)
+                throw new OsctlException(
+                    $"Grid '{instance.Name}' still has simulator instances ({string.Join(", ", sims.Select(i => i.Name))}); delete them first");
             if (globals.IsDryRun(parse) || !parse.GetValue(yes))
             {
                 await env.Out.WriteLineAsync($"would delete instance '{instance.Name}' ({regions.Count} region(s)): {store.Dir(instance.Name)} and {store.LogDir(instance.Name)}");
@@ -194,7 +209,20 @@ internal static class InstanceCommands
             }
             if (instance.Database == DatabaseKind.MariaDb && !parse.GetValue(keepDatabase))
                 await DropDatabasesAsync(env, globals, parse, instance, ct);
+            var onGrid = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe).GridOf(instance);
             store.Delete(instance.Name);
+            if (onGrid is { Grid.DefaultRegion: { } defaultRegion } && regions.Any(r => r.Name == defaultRegion))
+            {
+                store.Save(onGrid with { Grid = onGrid.GridSettings with { DefaultRegion = null } });
+                await env.Out.WriteLineAsync(
+                    $"Its region '{defaultRegion}' was grid '{onGrid.Name}''s default region; choose another: osctl grid set {onGrid.Name} --default-region <region>");
+            }
+            if (instance.IsRobust)
+            {
+                var sets = new ConfigSetStore(globals.Paths(parse));
+                if (sets.Exists(instance.Name) && sets.Load(instance.Name).Robust == instance.Name)
+                    File.Delete(sets.DefinitionFile(instance.Name));
+            }
             await env.Out.WriteLineAsync($"Instance '{instance.Name}' deleted.");
             return 0;
         });
@@ -212,7 +240,8 @@ internal static class InstanceCommands
         var generator = new ConfigGenerator(paths, settings);
         var sets = new ConfigSetStore(paths);
         var databases = new List<string> { generator.DatabaseName(instance.Name) };
-        if (sets.Exists(instance.ConfigSet) && sets.Load(instance.ConfigSet) is { Mode: ConfigSetMode.Standalone } set)
+        // A standalone's estate database is its own, and so is a grid's (its simulators are gone by now).
+        if (sets.Exists(instance.ConfigSet) && sets.Load(instance.ConfigSet) is { Mode: ConfigSetMode.Standalone or ConfigSetMode.Robust } set)
             databases.Add(generator.EstateDatabaseName(set.GridFor(instance.Name)));
 
         var admin = env.DatabaseFactory.Admin(settings.Database);
@@ -260,6 +289,8 @@ internal static class InstanceCommands
         {
             var (store, planner) = Planner(env, globals, parse);
             var instance = store.Load(parse.GetRequiredValue(instanceOption));
+            if (instance.IsRobust)
+                throw new OsctlException($"'{instance.Name}' is a grid's Robust instance: regions go in its simulator instances");
             var (x, y) = RegionDefinition.ParseLocation(parse.GetRequiredValue(location));
             var planned = planner.Plan(instance, parse.GetRequiredValue(region).Trim(), x, y, parse.GetValue(size),
                 parse.GetValue(port), parse.GetValue(uuid));
@@ -271,6 +302,13 @@ internal static class InstanceCommands
             }
             store.SaveRegions(instance.Name, [.. store.Regions(instance.Name), planned]);
             await env.Out.WriteLineAsync($"Region '{planned.Name}' added to instance '{instance.Name}': {x},{y}, {planned.Size} m, port {planned.Port}, UUID {planned.Uuid}.");
+            // The first region on one of osctl's grids is where new avatars arrive, until 'osctl grid set' says otherwise.
+            var grids = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe);
+            if (grids.GridOf(instance) is { Grid.DefaultRegion: null } grid)
+            {
+                store.Save(grid with { Grid = grid.GridSettings with { DefaultRegion = planned.Name } });
+                await env.Out.WriteLineAsync($"It is grid '{grid.Name}''s default region (restart the grid for it to take effect).");
+            }
             return 0;
         });
         return command;
@@ -323,6 +361,7 @@ internal static class InstanceCommands
             }
             store.SaveRegions(found.Instance, store.Regions(found.Instance).Where(r => r.Uuid != found.Region.Uuid));
             await env.Out.WriteLineAsync($"Region '{found.Region.Name}' removed from instance '{found.Instance}'.");
+            DefaultRegionChanged(env, globals, parse, store, found.Instance, found.Region.Name, null);
             return 0;
         });
         return command;
@@ -348,6 +387,7 @@ internal static class InstanceCommands
             }
             store.SaveRegions(found.Instance, store.Regions(found.Instance).Select(x => x.Uuid == r.Uuid ? renamed : x));
             await env.Out.WriteLineAsync($"Region '{r.Name}' is now '{renamed.Name}'.");
+            DefaultRegionChanged(env, globals, parse, store, found.Instance, r.Name, renamed.Name);
             return 0;
         });
         return command;
@@ -366,6 +406,8 @@ internal static class InstanceCommands
             var found = Find(planner, parse.GetRequiredValue(region), parse.GetValue(instanceOption));
             var r = found.Region;
             var target = store.Load(parse.GetValue(to) ?? found.Instance);
+            if (target.IsRobust)
+                throw new OsctlException($"'{target.Name}' is a grid's Robust instance: regions go in its simulator instances");
             var (x, y) = parse.GetValue(location) is { } text ? RegionDefinition.ParseLocation(text) : (r.X, r.Y);
             if (target.Name == found.Instance && (x, y) == (r.X, r.Y))
                 throw new OsctlException("Give --to and/or --location: the region would stay where it is");
@@ -513,6 +555,11 @@ internal static class InstanceCommands
                 if (!first)
                     await env.Out.WriteLineAsync();
                 first = false;
+                if (info.Kind == "robust")
+                {
+                    await env.Out.WriteLineAsync($"{info.Name}  (grid: Robust, build {info.Build}, {info.Database}, port {info.Port})");
+                    continue;
+                }
                 await env.Out.WriteLineAsync($"{info.Name}  (build {info.Build}, {info.ConfigSet}, {info.Database}, port {(info.Port == 0 ? "-" : info.Port.ToString())})");
                 WriteRegions(env.Out, info.Regions, indent: "  ");
             }
@@ -523,18 +570,33 @@ internal static class InstanceCommands
 
     // ---------------------------------------------------------------- helpers
 
+    /// <summary>A renamed or removed region that was its grid's default region: the grid follows the rename, or has none.</summary>
+    private static void DefaultRegionChanged(CliEnvironment env, GlobalOptions globals, ParseResult parse, InstanceStore store,
+        string instance, string oldName, string? newName)
+    {
+        var grids = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe);
+        if (grids.GridOf(store.Load(instance)) is not { } grid || grid.GridSettings.DefaultRegion != oldName)
+            return;
+        store.Save(grid with { Grid = grid.GridSettings with { DefaultRegion = newName } });
+        env.Out.WriteLine(newName is null
+            ? $"It was grid '{grid.Name}''s default region; choose another: osctl grid set {grid.Name} --default-region <region>"
+            : $"It stays grid '{grid.Name}''s default region.");
+    }
+
     internal sealed record RegionInfo(string Name, Guid Uuid, int X, int Y, int Size, int Port);
 
+    /// <summary>An instance as list and show print it. A grid's Robust instance has no estate; its port is the public one.</summary>
     internal sealed record InstanceInfo(
-        string Name, string Build, string ConfigSet, string Database, string Estate, string EstateOwner, int Port, IReadOnlyList<RegionInfo> Regions);
+        string Name, string Kind, string Build, string ConfigSet, string Database, string Estate, string EstateOwner, int Port,
+        IReadOnlyList<RegionInfo> Regions);
 
     private static InstanceInfo Describe(InstanceStore store, string name)
     {
         var instance = store.Load(name);
         var regions = store.Regions(name);
-        return new InstanceInfo(instance.Name, instance.Build, instance.ConfigSet,
-            instance.Database == DatabaseKind.Sqlite ? "sqlite" : "mariadb", instance.Estate.Name, instance.Estate.Owner,
-            ConfigGenerator.BasePort(regions),
+        return new InstanceInfo(instance.Name, instance.IsRobust ? "robust" : "sim", instance.Build, instance.ConfigSet,
+            instance.Database == DatabaseKind.Sqlite ? "sqlite" : "mariadb", instance.Estate?.Name ?? "", instance.Estate?.Owner ?? "",
+            instance.Grid?.PublicPort ?? ConfigGenerator.BasePort(regions),
             regions.Select(r => new RegionInfo(r.Name, r.Uuid, r.X, r.Y, r.Size, r.Port)).ToList());
     }
 

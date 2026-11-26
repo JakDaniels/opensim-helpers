@@ -7,13 +7,17 @@ namespace Osctl.Running;
 
 /// <summary>
 /// <c>osctl cmd</c> (PLAN.md "Running instances"): types a command into the instance's console and returns what it
-/// printed, read from the console log, up to the next console prompt (<c>Region (…) #</c>).
+/// printed, read from the console log, up to the next console prompt (<c>Region (…) #</c>, or Robust's
+/// <c>R.O.B.U.S.T.#</c>). A command that asks questions gets <c>answers</c>: each is typed once its question
+/// (the text before the colon OpenSim prints) has appeared, so answers such as passwords, which OpenSim does not
+/// echo, never reach the console log or the console history.
 /// </summary>
 public static partial class ConsoleCommand
 {
     private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(200);
 
-    public static async Task<string> RunAsync(Tmux tmux, string consoleLog, string command, TimeSpan timeout, TimeProvider time, CancellationToken ct)
+    public static async Task<string> RunAsync(Tmux tmux, string consoleLog, string command, TimeSpan timeout, TimeProvider time,
+        CancellationToken ct, IReadOnlyList<(string Question, string Answer)>? answers = null)
     {
         var pane = await tmux.StateAsync(ct);
         if (!pane.Exists || pane.Dead)
@@ -24,11 +28,25 @@ public static partial class ConsoleCommand
 
         var deadline = time.GetUtcNow() + timeout;
         var text = "";
+        var answered = 0;
+        var asked = 0;   // where in text the next question is looked for
         while (time.GetUtcNow() < deadline)
         {
             await Task.Delay(Poll, ct);
             (var more, start) = InstanceRunner.ReadFrom(consoleLog, start);
             text += more;
+            if (answers is not null && answered < answers.Count)
+            {
+                var (question, answer) = answers[answered];
+                var at = InstanceRunner.StripAnsi(text).IndexOf(question, asked, StringComparison.Ordinal);
+                if (at >= 0)
+                {
+                    await tmux.SendLineAsync(answer, ct);
+                    asked = at + question.Length;
+                    answered++;
+                }
+                continue;
+            }
             if (Output(text, command) is { } output)
                 return output;
             // A command that ends OpenSim (shutdown, quit) never brings the prompt back.
@@ -51,6 +69,6 @@ public static partial class ConsoleCommand
         return string.Join('\n', lines[(echo + 1)..prompt].Select(l => l.TrimEnd())).Trim('\n');
     }
 
-    [GeneratedRegex(@"^Region \([^)]*\) #\s*$")]
+    [GeneratedRegex(@"^(?:Region \([^)]*\) |R\.O\.B\.U\.S\.T\.)#\s*$")]
     private static partial Regex PromptPattern();
 }

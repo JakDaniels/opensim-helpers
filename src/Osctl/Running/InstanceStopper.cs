@@ -34,7 +34,15 @@ public sealed class InstanceStopper(
             return true;
         (state is null ? null : state with { Stopping = true })?.Save(instances.RunStateFile(name));
 
-        if (!force)
+        if (!force && instances.Load(name).IsRobust)
+        {
+            // Robust has no RemoteAdmin.
+            await Log($"typing 'shutdown' into the console of '{name}'");
+            await tmux.SendLineAsync("shutdown", ct);
+            if (await WaitAsync(tmux, TimeSpan.Zero, ct))
+                return true;
+        }
+        else if (!force)
         {
             var regions = instances.Regions(name);
             var port = ConfigGenerator.BasePort(regions);
@@ -51,15 +59,8 @@ public sealed class InstanceStopper(
                 await tmux.SendLineAsync("shutdown", ct);
             }
 
-            var deadline = time.GetUtcNow() + (notice ?? TimeSpan.Zero) + TimeSpan.FromSeconds(settings.Timeouts.StopSeconds);
-            while (time.GetUtcNow() < deadline)
-            {
-                pane = await tmux.StateAsync(ct);
-                if (!pane.Exists || pane.Dead)
-                    return true;
-                await Task.Delay(Poll, ct);
-            }
-            await Log($"'{name}' did not stop within {settings.Timeouts.StopSeconds} s; killing it");
+            if (await WaitAsync(tmux, notice ?? TimeSpan.Zero, ct))
+                return true;
         }
 
         if (pane.Pid > 0)
@@ -70,6 +71,21 @@ public sealed class InstanceStopper(
             if (Posix.IsAlive(pane.Pid))
                 Posix.Kill(pane.Pid, Posix.SIGKILL);
         }
+        return false;
+    }
+
+    /// <summary>Waits for the console's program to end: true if it did within the notice and [Timeouts] StopSeconds.</summary>
+    private async Task<bool> WaitAsync(Tmux tmux, TimeSpan notice, CancellationToken ct)
+    {
+        var deadline = time.GetUtcNow() + notice + TimeSpan.FromSeconds(settings.Timeouts.StopSeconds);
+        while (time.GetUtcNow() < deadline)
+        {
+            var pane = await tmux.StateAsync(ct);
+            if (!pane.Exists || pane.Dead)
+                return true;
+            await Task.Delay(Poll, ct);
+        }
+        await Log($"'{tmux.Session}' did not stop within {settings.Timeouts.StopSeconds} s; killing it");
         return false;
     }
 

@@ -8,8 +8,16 @@ namespace Osctl.Settings;
 /// <summary>A setting with a bad value; the message names the file and line.</summary>
 public sealed class SettingsException(string message) : Exception(message);
 
-/// <summary>Region and instance port allocation (MIOS: INSTANCE_MIN_PORT/INSTANCE_MAX_PORT, SSL_PORT_OFFSET).</summary>
-public sealed record PortSettings(int RegionPortMin = 9000, int RegionPortMax = 9099, int SslPortOffset = 500);
+/// <summary>
+/// Region and instance port allocation (MIOS: INSTANCE_MIN_PORT/INSTANCE_MAX_PORT, SSL_PORT_OFFSET), and the range
+/// grids' Robust instances take their public and private ports from.
+/// </summary>
+public sealed record PortSettings(
+    int RegionPortMin = 9000,
+    int RegionPortMax = 9099,
+    int SslPortOffset = 500,
+    int RobustPortMin = 8002,
+    int RobustPortMax = 8099);
 
 /// <summary>How long starting and stopping may take (MIOS: TIMEOUT, TMUX_START_TIMEOUT, TMUX_STOP_TIMEOUT).</summary>
 public sealed record TimeoutSettings(int StartSeconds = 180, int StopSeconds = 90);
@@ -57,7 +65,7 @@ public sealed record SupervisorSettings(SupervisorMode Mode = SupervisorMode.Sys
 /// The command an instance runs in its release's bin/, before osctl's own arguments (-inifile and so on).
 /// Settable for forks; the tests use a fake OpenSim.
 /// </summary>
-public sealed record RunSettings(string Command = "dotnet OpenSim.dll");
+public sealed record RunSettings(string Command = "dotnet OpenSim.dll", string RobustCommand = "dotnet Robust.dll");
 
 /// <summary>
 /// Backups (PLAN.md "Backups and scheduled restarts"): where they go (default: each instance's backups/ directory;
@@ -106,10 +114,15 @@ public static class SettingsLoader
         var ports = new PortSettings(
             s.Int("Ports", "RegionPortMin", d.Ports.RegionPortMin, 1, 65535),
             s.Int("Ports", "RegionPortMax", d.Ports.RegionPortMax, 1, 65535),
-            s.Int("Ports", "SslPortOffset", d.Ports.SslPortOffset, 0, 65535));
+            s.Int("Ports", "SslPortOffset", d.Ports.SslPortOffset, 0, 65535),
+            s.Int("Ports", "RobustPortMin", d.Ports.RobustPortMin, 1, 65535),
+            s.Int("Ports", "RobustPortMax", d.Ports.RobustPortMax, 1, 65535));
         if (ports.RegionPortMax < ports.RegionPortMin)
             throw new SettingsException(
                 $"{paths.SettingsFile}: [Ports] RegionPortMax ({ports.RegionPortMax}) is below RegionPortMin ({ports.RegionPortMin})");
+        if (ports.RobustPortMax <= ports.RobustPortMin)
+            throw new SettingsException(
+                $"{paths.SettingsFile}: [Ports] RobustPortMax ({ports.RobustPortMax}) must be above RobustPortMin ({ports.RobustPortMin}): a grid needs two ports");
 
         var timeouts = new TimeoutSettings(
             s.Int("Timeouts", "StartSeconds", d.Timeouts.StartSeconds, 1, 3600),
@@ -150,7 +163,7 @@ public static class SettingsLoader
             "direct" => SupervisorMode.Direct,
             _ => throw new SettingsException($"{paths.SettingsFile}: [Supervisor] Mode = {modeText}: expected systemd, systemd-user or direct"),
         });
-        var run = new RunSettings(s.String("Run", "Command", d.Run.Command));
+        var run = new RunSettings(s.String("Run", "Command", d.Run.Command), s.String("Run", "RobustCommand", d.Run.RobustCommand));
 
         var backups = new BackupSettings(
             s.OptionalString("Backups", "Dir"),

@@ -374,10 +374,57 @@ the timers under system systemd (the opensim user restarting through polkit) and
 
 ## Robust and local grids (phase 6)
 
-Instances of kind `robust`: config sets from `Robust.ini.example` / `Robust.HG.ini.example`, same layering, run
-`dotnet Robust.dll`, own port range, own database. A Robust instance defines a grid; simulator instances can
-use a generated config set `grid:<robust instance>` whose GridCommon URIs point at it. `osctl user create` (via
-the Robust console) for the first accounts.
+Decided (2026-11-25): a grid of your own on this machine, Hypergrid, plain HTTP; groups and offline IM on; voice
+stays in each simulator (os-webrtc-sas as today); simulators on other machines and moving a standalone into a grid
+are later.
+
+**A grid is a Robust instance.** `osctl grid add <grid> --build B --host grid.example.org [--name "My Grid"]
+[--nick mygrid] [--public-port 8002] [--private-port 8003]` creates:
+
+- the instance `<grid>` of kind `robust` (`[Instance] Kind = robust`), on the shipped config set `robust-hg`
+  (`Robust.HG.ini.example`, with `[Set Robust.HG.ini]` edits that switch on Groups V2, HG groups, offline IM and
+  FSAssets (`FSAssetConnector`, `HGFSAssetService`; decided 2026-11-26: assets as files, the database holds only
+  their index), and set `[Hypergrid] HomeURI`/`GatekeeperURI`), MariaDB only (Robust's SQLite support is incomplete), database
+  `opensim_<grid>`. Its `[Grid]` section holds `Host`, `PublicPort`, `PrivatePort`, `Name`, `Nick`,
+  `DefaultRegion` and `AssetsDir` (FSAssets' files; default the instance's `data/fsassets`); `osctl grid set`
+  changes them, `osctl grid list|show` shows them.
+- the config set `<grid>` (`/etc/osctl/configsets/<grid>.ini`, a plain file you can read and change) for the
+  simulators: `Mode = grid`, `Grid = <grid>`, `Robust = <grid>`, OpenSim's own `OpenSim.ini.example` and
+  `GridCommon.ini.example` with `Include-Architecture = config-include/GridHypergrid.ini`, and Groups V2 / offline
+  IM switched on (`[Set OpenSim.ini]`). Simulators join with `osctl instance add Sim1 --configset <grid>`.
+
+Ports: `[Ports] RobustPortMin`/`RobustPortMax` (8002–8099); `grid add` takes the first free pair. 8002 (public:
+login, grid info, map, Hypergrid gatekeeper and user agent) must be reachable from outside; 8003 (private: the
+simulators' services) must not be: Robust listens on every address, so a firewall or the container's port
+forwarding keeps it in. The simulators' own ports (region UDP and HTTP) must be public too; Caddy cannot help with
+UDP, so the README describes port forwarding (incus proxy devices) rather than a reverse proxy. HTTPS for 8002
+through a proxy is possible later; most grids use plain HTTP.
+
+What osctl sets itself for a Robust instance ("osctl" layer, as for simulators): `[Const] BaseHostname`,
+`PublicPort`, `PrivatePort`; `[Startup] PIDFile`, `ConsoleHistoryFile`, `RegistryLocation`; `[DatabaseService]`; `[GridInfoService] gridname`, `gridnick`; `[MapImageService]
+TilesStoragePath`; `[GridService] MapTileDirectory`; `[AssetService] BaseDirectory`/`SpoolDirectory`
+(`<AssetsDir>/data`, `<AssetsDir>/tmp`: the spool must be on the same file system); `[GridService] Region_<uuid> = "DefaultRegion, DefaultHGRegion, FallbackRegion"` for the
+grid's `DefaultRegion` (without one nobody can log in for the first time; the first region added to the grid
+becomes it). Its log4net file comes from `Robust.exe.config`. For a simulator on a local grid: `[Const]
+BaseHostname` (the grid's host), `PublicPort` and `PrivatePort` (the grid's), `PrivURL = http://127.0.0.1`.
+
+Running: the same unit, tmux console, `osctl run`, logs, status and backups (database dump; no OAR). Robust runs
+`[Run] RobustCommand` (`dotnet Robust.dll`) with `-inifile` and `-logconfig`. It is ready when both its ports
+answer; it is stopped by typing `shutdown` into its console (it has no RemoteAdmin). A simulator on a local grid:
+
+- `osctl start Sim1` starts the grid first if it is not running; `osctl start` with no names starts grids first
+  and `stop` stops them last; `osctl enable Sim1` enables its grid too. At boot both units start together and the
+  simulator waits (below), so no systemd drop-in is needed.
+- `osctl run` waits for the grid to be ready (up to [Timeouts] StartSeconds; it gives up after 20 s if the
+  grid's runner never appears), then checks (through the private port's `/accounts`) that the estate
+  owner has an account, and stops with the command that makes one if not (OpenSim would otherwise ask on its
+  console and never start unattended).
+- `osctl stop <grid>` warns while simulators on it are running; `instance delete <grid>` refuses while instances
+  use it, and removes its config set.
+
+Accounts: `osctl user create <instance> "First Last" [--password P] [--email E]` (password generated and shown
+once when not given) and `osctl user password <instance> "First Last" [--password P]`, typed into the console of a
+running grid or standalone (`create user …`, `reset user password …`).
 
 ## Stats and web UI (phase 7)
 

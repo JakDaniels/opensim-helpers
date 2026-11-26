@@ -12,6 +12,9 @@ public enum ConfigSetMode
 
     /// <summary>The services are a grid's; the estate owner must already exist there.</summary>
     Grid,
+
+    /// <summary>A Robust instance: the services of a grid of its own, named after the instance (PLAN.md phase 6).</summary>
+    Robust,
 }
 
 public enum FileSourceKind
@@ -38,8 +41,9 @@ public sealed record ConfigSetEdit(string File, string Section, string Key, stri
 /// <code>
 /// [ConfigSet]
 ///     Description = …
-///     Mode = standalone | grid
+///     Mode = standalone | grid | robust
 ///     Grid = osgrid                        ; grid mode: which grid (shared estate DB, asset cache, clash checks)
+///     Robust = mygrid                      ; grid mode: the grid is osctl's own Robust instance of that name
 ///     Load = OpenSimDefaults.ini, OpenSim.ini
 /// [Files]
 ///     OpenSim.ini = https://download.osgrid.org/OpenSim.ini.txt
@@ -56,10 +60,19 @@ public sealed record ConfigSet(
     string? Grid,
     IReadOnlyList<string> Load,
     IReadOnlyList<ConfigSetFile> Files,
-    IReadOnlyList<ConfigSetEdit> Edits)
+    IReadOnlyList<ConfigSetEdit> Edits,
+    string? Robust = null)
 {
-    /// <summary>The grid an instance using this set belongs to: a standalone is a grid of its own.</summary>
-    public string GridFor(string instance) => Mode == ConfigSetMode.Standalone ? $"standalone-{instance}" : Grid!;
+    /// <summary>
+    /// The grid an instance using this set belongs to: a standalone is a grid of its own, and a Robust instance is
+    /// the grid named after it.
+    /// </summary>
+    public string GridFor(string instance) => Mode switch
+    {
+        ConfigSetMode.Standalone => $"standalone-{instance}",
+        ConfigSetMode.Robust => instance,
+        _ => Grid!,
+    };
 
     public static ConfigSet FromFile(string path)
     {
@@ -71,11 +84,15 @@ public sealed record ConfigSet(
         {
             "standalone" => ConfigSetMode.Standalone,
             "grid" => ConfigSetMode.Grid,
-            var other => throw new OsctlException($"{path}: [ConfigSet] Mode = {other}: expected standalone or grid"),
+            "robust" => ConfigSetMode.Robust,
+            var other => throw new OsctlException($"{path}: [ConfigSet] Mode = {other}: expected standalone, grid or robust"),
         };
         var grid = head["Grid"] is { Length: > 0 } g ? Names.Check(g, "grid") : null;
         if (mode == ConfigSetMode.Grid && grid is null)
             throw new OsctlException($"{path}: [ConfigSet] Grid is needed for a grid config set");
+        var robust = head["Robust"] is { Length: > 0 } r ? Names.CheckInstance(r) : null;
+        if (robust is not null && mode != ConfigSetMode.Grid)
+            throw new OsctlException($"{path}: [ConfigSet] Robust is only for a grid config set");
 
         var load = (head["Load"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (load.Length == 0)
@@ -111,7 +128,7 @@ public sealed record ConfigSet(
             }
         }
 
-        return new ConfigSet(name, head["Description"] ?? "", mode, grid, load, files, edits);
+        return new ConfigSet(name, head["Description"] ?? "", mode, grid, load, files, edits, robust);
     }
 
     private static string CheckRelative(string file, string path)

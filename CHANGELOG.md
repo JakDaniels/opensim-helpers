@@ -5,6 +5,12 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: grids of your own. `osctl grid add` sets up Robust (Hypergrid, groups, offline messages, and assets as
+  files with FSAssets) with a config set for its simulators; `osctl user create|password` manage accounts;
+  simulators wait for their grid and check their estate owner has an account; the first region becomes the default.
+
+## 0.2.1 (2026-11-25)
+
 - osctl: warns (in `config` commands, `start`, `restart` and the runner log) when an instance has SpatialAudioServer
   voice (os-webrtc-sas) but no `StunServers`, without which WebRTC viewers' voice never starts; `start` and `restart`
   now show configuration warnings.

@@ -17,8 +17,8 @@ public class InstanceTests
         Assert.Equal("b1", instance.Build);                       // the only build
         Assert.Equal("standalone", instance.ConfigSet);           // [Defaults] ConfigSet
         Assert.Equal(DatabaseKind.MariaDb, instance.Database);
-        Assert.Equal("Test1 Estate", instance.Estate.Name);
-        Assert.NotNull(instance.Estate.OwnerUuid);
+        Assert.Equal("Test1 Estate", instance.SimEstate.Name);
+        Assert.NotNull(instance.SimEstate.OwnerUuid);
 
         var password = f.Instances.OwnerPassword("Test1")!;
         Assert.Equal(20, password.Length);
@@ -40,7 +40,7 @@ public class InstanceTests
         Assert.Equal(3, f.Web.Requests.Count);
         Assert.DoesNotContain("password", output);
         Assert.Null(f.Instances.OwnerPassword("Grid1"));
-        Assert.Null(f.Instances.Load("Grid1").Estate.OwnerUuid);
+        Assert.Null(f.Instances.Load("Grid1").SimEstate.OwnerUuid);
     }
 
     [Theory]

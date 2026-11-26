@@ -108,6 +108,25 @@ internal sealed class InstanceFixture : IDisposable
             "[DatabaseService]\n    StorageProvider = \"OpenSim.Data.SQLite.dll\"\n    ConnectionString = \"URI=file:OpenSim.db;UseUTF16Encoding=True\"\n" +
             "[AssetService]\n    ConnectionString = \"URI=file:Asset.db\"\n");
         W("config-include/FlotsamCache.ini.example", "[AssetCache]\n    CacheDirectory = ./assetcache\n");
+        W("config-include/GridCommon.ini.example",
+            "[Hypergrid]\n    HomeURI = \"${Const|BaseURL}:${Const|PublicPort}\"\n" +
+            "[GridService]\n    GridServerURI = \"${Const|PrivURL}:${Const|PrivatePort}\"\n" +
+            "[DatabaseService]\n    Include-Storage = \"config-include/storage/SQLiteStandalone.ini\";\n");
+        W("Robust.HG.ini.example",
+            "[Const]\n    BaseHostname = \"127.0.0.1\"\n    BaseURL = \"http://${Const|BaseHostname}\"\n    PublicPort = \"8002\"\n    PrivatePort = \"8003\"\n" +
+            "[ServiceList]\n    GridServiceConnector = \"${Const|PrivatePort}/OpenSim.Server.Handlers.dll:GridServiceConnector\"\n" +
+            "[DatabaseService]\n    StorageProvider = \"OpenSim.Data.MySQL.dll\"\n    ConnectionString = \"Data Source=localhost;Database=opensim;\"\n" +
+            "[GridInfoService]\n    gridname = \"the lost continent of hippo\"\n    gridnick = \"hippogrid\"\n");
+        W("Robust.exe.config", """
+            <?xml version="1.0" encoding="utf-8" ?>
+            <configuration>
+              <log4net>
+                <appender name="LogFileAppender" type="log4net.Appender.FileAppender">
+                  <file value="Robust.log" />
+                </appender>
+              </log4net>
+            </configuration>
+            """);
         W("OpenSim.exe.config", """
             <?xml version="1.0" encoding="utf-8" ?>
             <configuration>

@@ -94,11 +94,18 @@ public sealed class RegionPlanner(InstanceStore instances, ConfigSetStore config
                 $"Location {x},{y} (size {size}) overlaps region '{overlap.Region.Name}' at {overlap.Region.X},{overlap.Region.Y} (instance {overlap.Instance})");
 
         var usedPorts = others.Select(p => p.Region.Port).ToHashSet();
+        foreach (var robust in instances.Names().Select(instances.Load).Select(i => i.Grid).OfType<GridDefinition>())
+        {
+            usedPorts.Add(robust.PublicPort);
+            usedPorts.Add(robust.PrivatePort);
+        }
         int chosenPort;
         if (port is { } wanted)
         {
             if (others.FirstOrDefault(p => p.Region.Port == wanted) is { } user)
                 throw new OsctlException($"Port {wanted} is already used by region '{user.Region.Name}' (instance {user.Instance})");
+            if (usedPorts.Contains(wanted))
+                throw new OsctlException($"Port {wanted} is already used by a grid's Robust instance");
             if (!probe.IsFree(wanted))
                 throw new OsctlException($"Port {wanted} is in use on this machine");
             chosenPort = wanted;

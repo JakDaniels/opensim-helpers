@@ -129,6 +129,7 @@ public class ConsoleAndRemoteAdminTests
         Assert.Equal("Name  ID\nWelcome  abc", ConsoleCommand.Output(raw, "show regions"));
         Assert.Null(ConsoleCommand.Output("Region (root) # show regions\r\nName  ID\r\n", "show regions"));
         Assert.Null(ConsoleCommand.Output("other output\r\n", "show regions"));
+        Assert.Equal("Password reset for user A B", ConsoleCommand.Output("R.O.B.U.S.T.# reset user password A B\r\nNew password: \r\nPassword reset for user A B\r\nR.O.B.U.S.T.# ", "reset user password A B")?.Replace("New password:\n", ""));
     }
 
     [Fact]
