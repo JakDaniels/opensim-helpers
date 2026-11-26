@@ -20,11 +20,14 @@ public sealed record IniLoadResult(
 /// <see cref="Edit"/>: called with each file's relative path and contents before they are merged (and so before its
 /// includes are followed).
 /// <see cref="IgnoredIncludes"/>: <c>Section|Key</c> include keys that are not followed.
+/// <see cref="OptionalIncludes"/>: <c>Section|Key</c> include keys that are followed when the file is there, without a
+/// warning when it is not.
 /// </summary>
 public sealed record IniLoadOptions(
     Func<string, string?>? Overlay = null,
     Action<string, IniDocument>? Edit = null,
-    IReadOnlySet<string>? IgnoredIncludes = null);
+    IReadOnlySet<string>? IgnoredIncludes = null,
+    IReadOnlySet<string>? OptionalIncludes = null);
 
 /// <summary>
 /// Loads a list of ini files and follows their <c>Include-*</c> keys the way OpenSim's ConfigurationLoader does
@@ -123,6 +126,8 @@ public static class IniLoader
 
                 if (wildcard < 0 && matches.Count == 0)
                 {
+                    if (options.OptionalIncludes?.Contains($"{section.Name}|{entry.Key}") == true)
+                        continue;
                     var warning = $"Could not find include file {path} ([{section.Name}] {entry.Key}, {entry.Origin})";
                     if (!warnings.Contains(warning))
                         warnings.Add(warning);

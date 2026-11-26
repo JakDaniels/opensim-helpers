@@ -5,6 +5,9 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: no warning about a missing config-include/osslEnable.ini at start; OpenSim ships it only as an example,
+  for local OSSL changes.
+
 ## 0.3.0 (2026-11-26)
 
 - osctl: grids of your own. `osctl grid add` sets up Robust (Hypergrid, groups, offline messages, and assets as

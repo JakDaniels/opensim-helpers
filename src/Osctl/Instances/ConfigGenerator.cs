@@ -40,6 +40,12 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
 
     /// <summary>The flags the grid's default region gets: where new avatars and Hypergrid visitors arrive.</summary>
     public const string DefaultRegionFlags = "DefaultRegion, DefaultHGRegion, FallbackRegion";
+
+    /// <summary>
+    /// Includes OpenSim's own files always make but whose file is a local choice, shipped only as a .example:
+    /// osslDefaultEnable.ini's <c>[OSSL] Include-osslEnable</c> (a config set's [Files] or overrides may supply it).
+    /// </summary>
+    private static readonly HashSet<string> OptionalIncludes = ["OSSL|Include-osslEnable"];
     public const string Log4NetFile = "log4net.config";
 
     private readonly InstanceStore instances = new(paths);
@@ -77,7 +83,8 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
                 foreach (var edit in set.Edits.Where(e => e.File == rel))
                     doc.Set(edit.Section, edit.Key, edit.Value, new IniOrigin(configSets.DefinitionFile(set.Name), 0));
             },
-            IgnoredIncludes: ignored);
+            IgnoredIncludes: ignored,
+            OptionalIncludes: OptionalIncludes);
         var loaded = IniLoader.Load(set.Load, bin, options);
         warnings.AddRange(loaded.Warnings);
         var layers = new List<IniLayer>(loaded.Layers);

@@ -96,6 +96,19 @@ public class IniLoaderTests
     }
 
     [Fact]
+    public void AnOptionalIncludeIsFollowedWhenThereAndQuietWhenNot()
+    {
+        using var dir = new TempDir();
+        dir.Write("main.ini", "[OSSL]\nInclude-osslEnable = config-include/osslEnable.ini");
+        var options = new IniLoadOptions(OptionalIncludes: new HashSet<string> { "OSSL|Include-osslEnable" });
+
+        Assert.Empty(IniLoader.Load(["main.ini"], dir.Path, options).Warnings);
+
+        dir.Write("config-include/osslEnable.ini", "[OSSL]\nOSFunctionThreatLevel = Low");
+        Assert.Equal("Low", IniLoader.Load(["main.ini"], dir.Path, options).Document.Get("OSSL", "OSFunctionThreatLevel"));
+    }
+
+    [Fact]
     public void AnAbsoluteIncludeIsUsedAsItIs()
     {
         using var dir = new TempDir();
