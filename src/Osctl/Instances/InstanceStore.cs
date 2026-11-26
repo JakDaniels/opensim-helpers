@@ -111,7 +111,7 @@ public sealed class InstanceStore(OsctlPaths paths)
     /// or for the estate owner of a standalone, the owner's password.
     /// </summary>
     public string? IarPassword(string name, string user) =>
-        Secret(name, "IAR", user) ?? (Load(name).Estate.Owner == user ? OwnerPassword(name) : null);
+        Secret(name, "IAR", user) ?? (Load(name).Estate?.Owner == user ? OwnerPassword(name) : null);
 
     /// <summary>Stores the password for an IAR of <paramref name="user"/> in the instance's secrets.ini.</summary>
     public void SetIarPassword(string name, string user, string password) =>

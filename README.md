@@ -17,7 +17,7 @@ It replaces [MIOS](https://github.com/JakDaniels/MIOS), the old PHP scripts. [PL
 with the reasons for each decision.
 
 **Status:** version 0.1. Builds, instances, regions, configuration, databases and running under systemd work.
-Robust (grid services) and a stats page are still to come.
+A grid of your own (Robust, with Hypergrid) is new; a stats page is still to come.
 
 ## Contents
 
@@ -28,6 +28,7 @@ Robust (grid services) and a stats page are still to come.
 - [How configuration works](#how-configuration-works)
 - [osctl.ini settings](#osctlini-settings)
 - [Typical setups](#typical-setups)
+- [A grid of your own](#a-grid-of-your-own)
 - [Running instances](#running-instances)
 - [Visitors, backups and scheduled restarts](#visitors-backups-and-scheduled-restarts)
 - [Where things are](#where-things-are)
@@ -429,6 +430,65 @@ Builds and releases:
 - The last 3 releases are kept (`--keep N` on `build add`). `osctl build rollback sas-dev` goes back one.
 - `osctl build show sas-dev` lists the releases.
 
+## A grid of your own
+
+A grid is one Robust instance (the grid's services: accounts, inventory, assets, login, the map, groups, offline
+messages and the Hypergrid gatekeeper) and any number of simulator instances that use it. osctl sets up both on this
+machine, with Hypergrid, so your avatars can visit other grids and visitors can come in. It needs MariaDB.
+
+```
+osctl grid add MyGrid --host grid.example.org --name "My Grid"
+osctl start MyGrid
+osctl user create MyGrid "Jo Bloggs"
+osctl instance add Sim1 --configset MyGrid --estate "Mainland" --estate-owner "Jo Bloggs"
+osctl region add Welcome --instance Sim1 --location 1000,1000
+osctl start Sim1
+```
+
+- **`grid add`** creates the instance `MyGrid` (Robust, from OpenSim's `Robust.HG.ini.example`, with groups,
+  offline messages and FSAssets switched on), its databases, and the config set `MyGrid`, which its simulators use. It takes two
+  ports from `[Ports] RobustPortMin`–`RobustPortMax`: 8002 and 8003 for the first grid.
+- **`--host`** is the name or address viewers and other grids reach the grid at. Viewers log in with
+  `http://grid.example.org:8002/` (`osctl grid show MyGrid` prints it).
+- **Accounts:** `osctl user create` makes one (the password is generated and shown once, or give `--password`);
+  `osctl user password` changes one. The grid must be running. The estate owner of each simulator needs an
+  account first: a simulator whose owner has none does not start, and says which command makes it.
+- **Assets** are kept as files by FSAssets, not in the database: in the grid instance's `data/fsassets/`, or
+  wherever `--assets-dir` (on `grid add` or `grid set`) says. The database holds only their index.
+  `osctl backup create MyGrid --db` saves the database but not these files: back the directory up as well.
+- **The default region:** the grid's first region is where new avatars and Hypergrid visitors arrive.
+  `osctl grid set MyGrid --default-region <region>` chooses another; restart the grid afterwards.
+- **Starting and stopping:** starting a simulator starts its grid first, `osctl start` starts grids before
+  simulators, `osctl stop` stops them after, and `osctl enable Sim1` also makes the grid start at boot. A
+  simulator waits for its grid to be ready.
+- **Changes:** `osctl grid set` changes the host, names and ports; restart the grid and its simulators. Robust's
+  other settings are overridden like any instance's (`/var/lib/osctl/instances/MyGrid/overrides/*.ini`, for
+  example `[GridInfoService] welcome`).
+- **Removing:** `osctl instance delete MyGrid --yes` once its simulators are deleted; its config set goes too.
+
+**Ports.** Most grids use plain HTTP, and Hypergrid addresses are usually `http://host:8002`. Open to the internet
+(forward to this machine or container):
+
+| Port | Protocol | What |
+|---|---|---|
+| 8002 (the grid's public port) | TCP | Login, grid info, the map, Hypergrid |
+| each simulator's HTTP port (its lowest region port) | TCP | The simulator's own services |
+| each region's port | UDP | The viewers' connection to the region |
+
+`osctl grid show MyGrid` lists them all. **Keep 8003 (the private port) closed:** it is the grid's services, with
+no password, for the simulators on this machine. Robust listens on every address, so close it with a firewall
+or by not forwarding it. A reverse proxy such as Caddy cannot carry the regions' UDP, so forward the ports
+instead. With incus, for example, a proxy device per port on the host:
+
+```
+incus config device add opensim robust-public proxy listen=tcp:0.0.0.0:8002 connect=tcp:127.0.0.1:8002
+incus config device add opensim sim1-http proxy listen=tcp:0.0.0.0:9000 connect=tcp:127.0.0.1:9000
+incus config device add opensim welcome-udp proxy listen=udp:0.0.0.0:9000 connect=udp:127.0.0.1:9000
+```
+
+Set `ExternalHostName` in the regions to the same public name (see [Region settings](#region-settings)), so
+viewers are sent to an address they can reach.
+
 ## Running instances
 
 `[Supervisor] Mode` in `osctl.ini` decides how instances run:
@@ -572,6 +632,8 @@ timers.
 | `osctl instance add\|list\|show\|delete` | Instances. |
 | `osctl region add\|list\|remove\|rename\|move\|set\|get` | Regions. `rename` and `move` keep the region's UUID, so its contents stay. |
 | `osctl list` | Every instance with its regions. |
+| `osctl grid add\|list\|show\|set` | Grids of your own: a Robust instance and the config set its simulators use. |
+| `osctl user create\|password <grid> "First Last"` | Accounts on a running grid or standalone. |
 | `osctl config show\|explain\|diff\|generate` | An instance's generated configuration. |
 | `osctl db init` | Sets up MariaDB (as root). |
 | `osctl start\|stop\|restart [instance…]` | All instances when none is named. `stop --force` kills straight away; `--warn 10m` warns people in-world first. |

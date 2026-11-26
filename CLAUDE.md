@@ -5,10 +5,15 @@ Read [PLAN.md](PLAN.md) first: it is the design and holds every decision made so
 ## What this is
 osctl ("MIOS 2.0") manages several OpenSimulator instances on one Ubuntu machine: named OpenSim builds from git,
 instances and regions, layered ini configuration, systemd units with a tmux console per instance, MariaDB/SQLite,
-backups and scheduled restarts; later Robust and a stats web page. C# on .NET 10. It replaces MIOS (PHP), whose
+backups and scheduled restarts, Robust grids of your own; later a stats web page. C# on .NET 10. It replaces MIOS (PHP), whose
 source is at `../MIOS` in the SpatialAudioServer reference tree (ideas only).
 
 ## Where we are
+- Phase 6 (Robust and local grids) under way, not released: PLAN.md "Robust and local grids". `InstanceKind.Robust`
+  with `[Grid]` (`InstanceDefinition`), config set Mode `robust` (shipped `robust-hg`) and `Robust =` on a grid
+  config set, `Instances/Grids.cs`, `Cli/GridCommands.cs` (`grid`, `user`), `ConfigGenerator.ForcedRobust`,
+  runner readiness by ports and `WaitForGridAsync` (owner check over `/accounts`, `Running/GridServices.cs`).
+  Tests `Osctl.Tests/Instances/GridTests.cs`. Not yet tried against a real Robust.
 - Phase 5 (operations) done, not yet released: `src/Osctl/Operations/` (Visitors, BackupStore + BackupRunner,
   Countdown, Schedules, Durations), `Cli/OperationsCommands.cs`; `restart|stop --warn`, `restart --scheduled`;
   `units install` also writes `osctl-restart@.service`, `osctl-backup@.service` and every instance's timers.

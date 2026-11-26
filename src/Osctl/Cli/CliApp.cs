@@ -28,8 +28,11 @@ public sealed record CliEnvironment(
     IRemoteAdmin? RemoteAdmin = null,
     IReadOnlyList<string>? OsctlCommand = null,
     TextReader? Input = null,
-    string? SystemdUnitDir = null)
+    string? SystemdUnitDir = null,
+    IGridServices? GridServices = null)
 {
+    public IGridServices Grid => GridServices ?? new HttpGridServices();
+
     /// <summary>Where systemd units go: /etc/systemd/system, ~/.config/systemd/user, or a test directory.</summary>
     public string UnitDir(bool user) => SystemdUnitDir ?? Operations.Schedules.UnitDir(user);
 
@@ -121,6 +124,8 @@ public static class CliApp
         root.Add(ConfigSetCommands.Create(env, globals));
         root.Add(InstanceCommands.Create(env, globals));
         root.Add(InstanceCommands.Regions(env, globals));
+        root.Add(GridCommands.Create(env, globals));
+        root.Add(GridCommands.Users(env, globals));
         root.Add(InstanceCommands.List(env, globals));
         root.Add(ConfigCommands.Create(env, globals));
         root.Add(DbCommands.Create(env, globals));

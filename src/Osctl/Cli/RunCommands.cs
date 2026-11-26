@@ -86,7 +86,7 @@ internal static class RunCommands
             var settings = globals.Settings(parse);
             var store = new InstanceStore(globals.Paths(parse));
             var supervisor = Supervisor(env, globals, parse);
-            var selected = Selected(store, parse.GetValue(names));
+            var selected = Ordered(env, globals, parse, store, Selected(store, parse.GetValue(names)), verb);
             var isScheduled = parse.GetValue(scheduled);
             var warning = parse.GetValue(warn) is { } text ? Operations.Durations.Parse(text) : (TimeSpan?)null;
 
@@ -98,6 +98,8 @@ internal static class RunCommands
                 {
                     if ((await supervisor.StatusAsync(name, ct)).State == InstanceState.Running)
                         running.Add(name);
+                    else if (isScheduled && store.Load(name).IsRobust)
+                        await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
                     else if (isScheduled)
                         await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
                 }
@@ -105,7 +107,9 @@ internal static class RunCommands
                     selected = running;
 
                 // Instances warned for the same time are counted down together; different times run side by side.
+                // A grid's Robust has nobody in it to warn (and no RemoteAdmin): only simulators are counted down.
                 var groups = running
+                    .Where(n => !store.Load(n).IsRobust)
                     .GroupBy(n => warning ?? TimeSpan.FromMinutes(store.Load(n).Scheduled.WarnMinutes ?? settings.Schedule.WarnMinutes))
                     .Where(g => g.Key > TimeSpan.Zero)
                     .ToList();
@@ -124,13 +128,15 @@ internal static class RunCommands
             var failures = 0;
             foreach (var name in selected)
             {
-                if (verb == "start" && store.Regions(name).Count == 0)
+                if (verb == "start" && !store.Load(name).IsRobust && store.Regions(name).Count == 0)
                 {
                     await env.Out.WriteLineAsync($"{name}: no regions, not started");
                     continue;
                 }
                 if (verb is "start" or "restart")
                     await ConfigWarningsAsync(env, globals, parse, name);
+                if (verb == "stop" && store.Load(name).IsRobust)
+                    await RunningSimulatorsWarningAsync(env, globals, parse, supervisor, name, selected, ct);
                 await env.Out.WriteAsync($"{verb[..1].ToUpperInvariant()}{verb[1..]}ing {name} … ".Replace("Stoping", "Stopping"));
                 try
                 {
@@ -147,6 +153,50 @@ internal static class RunCommands
             return failures == 0 ? 0 : CliApp.ExitFailure;
         });
         return command;
+    }
+
+    /// <summary>
+    /// Grids first when starting, so their simulators find them, and a simulator's grid is started with it when it is
+    /// not running; grids last when stopping. Restarting keeps the given order (grids first).
+    /// </summary>
+    private static IReadOnlyList<string> Ordered(CliEnvironment env, GlobalOptions globals, ParseResult parse, InstanceStore store,
+        IReadOnlyList<string> selected, string verb)
+    {
+        var instances = selected.Select(store.Load).ToList();
+        if (verb == "stop")
+            return [.. instances.Where(i => !i.IsRobust).Concat(instances.Where(i => i.IsRobust)).Select(i => i.Name)];
+
+        var names = new List<string>();
+        if (verb == "start")
+        {
+            var grids = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe);
+            foreach (var grid in instances.Select(grids.GridOf).OfType<InstanceDefinition>())
+            {
+                // Starting one that is running already does nothing.
+                if (!names.Contains(grid.Name))
+                    names.Add(grid.Name);
+            }
+        }
+        names.AddRange(instances.Where(i => i.IsRobust && !names.Contains(i.Name)).Select(i => i.Name));
+        names.AddRange(instances.Where(i => !i.IsRobust).Select(i => i.Name));
+        return names;
+    }
+
+    /// <summary>Stopping a grid while simulators on it keep running leaves them without their services: say so.</summary>
+    private static async Task RunningSimulatorsWarningAsync(CliEnvironment env, GlobalOptions globals, ParseResult parse,
+        ISupervisor supervisor, string grid, IReadOnlyList<string> stopping, CancellationToken ct)
+    {
+        var sims = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe).Simulators(grid)
+            .Where(s => !stopping.Contains(s.Name)).ToList();
+        var running = new List<string>();
+        foreach (var sim in sims)
+        {
+            if ((await supervisor.StatusAsync(sim.Name, ct)).State is InstanceState.Running or InstanceState.Starting)
+                running.Add(sim.Name);
+        }
+        if (running.Count > 0)
+            await env.Error.WriteLineAsync(
+                $"osctl: warning: {string.Join(", ", running)} still run on grid '{grid}': logins, teleports and inventory stop working until it is back");
     }
 
     /// <summary>
@@ -179,10 +229,22 @@ internal static class RunCommands
                 throw new OsctlException("Nothing starts at boot with [Supervisor] Mode = direct; use systemd or systemd-user");
             var store = new InstanceStore(globals.Paths(parse));
             var supervisor = Supervisor(env, globals, parse);
-            foreach (var name in Selected(store, parse.GetValue(names)))
+            var selected = Selected(store, parse.GetValue(names));
+            foreach (var name in selected)
             {
                 await supervisor.SetBootAsync(name, enable, ct);
                 await env.Out.WriteLineAsync($"{name}: {(enable ? "starts" : "does not start")} at boot");
+            }
+            // A simulator on one of osctl's grids waits for its grid at start-up, so the grid must start at boot too.
+            if (enable)
+            {
+                var grids = new Grids(globals.Paths(parse), globals.Settings(parse), env.PortProbe);
+                foreach (var grid in selected.Select(store.Load).Select(grids.GridOf).OfType<InstanceDefinition>()
+                             .Select(g => g.Name).Distinct().Where(g => !selected.Contains(g)))
+                {
+                    await supervisor.SetBootAsync(grid, true, ct);
+                    await env.Out.WriteLineAsync($"{grid}: starts at boot (its simulators need it)");
+                }
             }
             return 0;
         });
@@ -294,7 +356,7 @@ internal static class RunCommands
             var instance = store.Load(parse.GetRequiredValue(name));
             var file = parse.GetValue(console) ? store.ConsoleLog(instance.Name)
                 : parse.GetValue(runner) ? Path.Combine(store.LogDir(instance.Name), "runner.log")
-                : Path.Combine(store.LogDir(instance.Name), "OpenSim.log");
+                : Path.Combine(store.LogDir(instance.Name), instance.IsRobust ? "Robust.log" : "OpenSim.log");
             if (!File.Exists(file))
                 throw new OsctlException($"{file} does not exist yet");
 
@@ -328,7 +390,8 @@ internal static class RunCommands
         var command = new Command("run", "Run an instance until OpenSim ends (what the systemd unit runs)") { name, foreground };
         CliApp.SetAction(command, env, async (parse, ct) =>
         {
-            var runner = new InstanceRunner(globals.Paths(parse), globals.Settings(parse), env.Runner, env.Admin, env.PortProbe, env.Out, env.Clock);
+            var runner = new InstanceRunner(globals.Paths(parse), globals.Settings(parse), env.Runner, env.Admin, env.PortProbe, env.Out, env.Clock,
+                env.Grid);
             return await runner.RunAsync(parse.GetRequiredValue(name), parse.GetValue(foreground), ct);
         });
         return command;

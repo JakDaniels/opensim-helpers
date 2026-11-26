@@ -13,6 +13,26 @@ public enum DatabaseKind
     Sqlite,
 }
 
+/// <summary>What an instance runs: OpenSim with regions, or Robust (a grid's services; PLAN.md phase 6).</summary>
+public enum InstanceKind
+{
+    Sim,
+    Robust,
+}
+
+/// <summary>
+/// A grid's settings, the [Grid] section of its Robust instance (PLAN.md "Robust and local grids"): the public host
+/// name viewers and other grids use, the public port (login, grid info, Hypergrid) and the private port (the
+/// simulators' services), the grid's name and nickname, the region new avatars arrive in, and where FSAssets keeps
+/// the asset files (null: the instance's data/fsassets).
+/// </summary>
+public sealed record GridDefinition(
+    string Host, int PublicPort, int PrivatePort, string Name, string Nick, string? DefaultRegion = null, string? AssetsDir = null)
+{
+    /// <summary>The public address: http://host:port.</summary>
+    public string PublicUri => $"http://{Host}:{PublicPort.ToString(CultureInfo.InvariantCulture)}";
+}
+
 /// <summary>
 /// The estate new regions join on first start (PLAN.md "Resolved decisions", first start). On a standalone,
 /// OpenSim creates the owner's account with <see cref="OwnerUuid"/> and the password from the instance's
@@ -42,6 +62,7 @@ public sealed record InstanceBackups(IReadOnlyList<string> IarUsers, int? KeepDa
 /// An instance, stored as /var/lib/osctl/instances/&lt;name&gt;/instance.ini:
 /// <code>
 /// [Instance]
+///     Kind = sim                  ; or robust: a grid's services, with [Grid] instead of [Estate]
 ///     Build = sas-dev
 ///     ConfigSet = standalone
 ///     Database = mariadb          ; or sqlite
@@ -58,6 +79,14 @@ public sealed record InstanceBackups(IReadOnlyList<string> IarUsers, int? KeepDa
 ///     Iar = Test User, Other Person
 ///     KeepDaily = 7
 ///     KeepWeekly = 4
+/// [Grid]                          ; robust only
+///     Host = grid.example.org
+///     PublicPort = 8002
+///     PrivatePort = 8003
+///     Name = My Grid
+///     Nick = mygrid
+///     DefaultRegion = Welcome
+///     AssetsDir = /srv/assets      ; optional: FSAssets' files (default: the instance's data/fsassets)
 /// </code>
 /// </summary>
 public sealed partial record InstanceDefinition(
@@ -65,10 +94,22 @@ public sealed partial record InstanceDefinition(
     string Build,
     string ConfigSet,
     DatabaseKind Database,
-    EstateDefinition Estate,
+    EstateDefinition? Estate,
     InstanceSchedule? Schedule = null,
-    InstanceBackups? Backups = null)
+    InstanceBackups? Backups = null,
+    InstanceKind Kind = InstanceKind.Sim,
+    GridDefinition? Grid = null)
 {
+    public bool IsRobust => Kind == InstanceKind.Robust;
+
+    /// <summary>A simulator's estate; it always has one (a Robust instance has none).</summary>
+    public EstateDefinition SimEstate =>
+        Estate ?? throw new OsctlException($"Instance '{Name}' runs Robust: it has no estate");
+
+    /// <summary>A Robust instance's grid settings.</summary>
+    public GridDefinition GridSettings =>
+        Grid ?? throw new OsctlException($"Instance '{Name}' is not a grid (it runs OpenSim, not Robust)");
+
     public InstanceSchedule Scheduled => Schedule ?? InstanceSchedule.None;
 
     public InstanceBackups BackupOptions => Backups ?? InstanceBackups.None;
@@ -77,7 +118,15 @@ public sealed partial record InstanceDefinition(
     {
         var doc = IniParser.ParseFile(path);
         var head = doc["Instance"] ?? throw new OsctlException($"{path}: no [Instance] section");
-        var estate = doc["Estate"] ?? throw new OsctlException($"{path}: no [Estate] section");
+        var kind = (head["Kind"] ?? "sim").ToLowerInvariant() switch
+        {
+            "sim" or "" => InstanceKind.Sim,
+            "robust" => InstanceKind.Robust,
+            var other => throw new OsctlException($"{path}: [Instance] Kind = {other}: expected sim or robust"),
+        };
+        var estate = doc["Estate"];
+        if (estate is null && kind == InstanceKind.Sim)
+            throw new OsctlException($"{path}: no [Estate] section");
 
         string Required(IniSection s, string key) =>
             s[key] is { Length: > 0 } v ? v : throw new OsctlException($"{path}: [{s.Name}] {key} is missing");
@@ -86,7 +135,7 @@ public sealed partial record InstanceDefinition(
             ?? throw new OsctlException($"{path}: [Instance] Database = {head["Database"]}: expected mariadb or sqlite");
 
         Guid? uuid = null;
-        if (estate["OwnerUUID"] is { Length: > 0 } text)
+        if (estate?["OwnerUUID"] is { Length: > 0 } text)
             uuid = Guid.TryParse(text, out var g) ? g : throw new OsctlException($"{path}: [Estate] OwnerUUID = {text} is not a UUID");
 
         int? Number(IniSection? s, string key, int max)
@@ -98,6 +147,16 @@ public sealed partial record InstanceDefinition(
         }
         string? Text(IniSection? s, string key) => s?[key] is { Length: > 0 } v ? v : null;
 
+        GridDefinition? grid = null;
+        if (kind == InstanceKind.Robust)
+        {
+            var g = doc["Grid"] ?? throw new OsctlException($"{path}: no [Grid] section");
+            int Port(string key) => Number(g, key, 65535) is { } n and > 0 ? n
+                : throw new OsctlException($"{path}: [Grid] {key} is missing");
+            grid = new GridDefinition(CheckHost(Required(g, "Host")), Port("PublicPort"), Port("PrivatePort"),
+                Required(g, "Name"), Required(g, "Nick"), Text(g, "DefaultRegion"), Text(g, "AssetsDir") is { } assets ? CheckDir(path, assets) : null);
+        }
+
         var schedule = doc["Schedule"];
         var backups = doc["Backups"];
         var iar = (Text(backups, "Iar") ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
@@ -108,22 +167,39 @@ public sealed partial record InstanceDefinition(
             Names.Check(Required(head, "Build"), "build"),
             Names.Check(Required(head, "ConfigSet"), "config set"),
             database,
-            new EstateDefinition(Required(estate, "Name"), CheckOwner(Required(estate, "Owner")), uuid,
+            estate is null ? null : new EstateDefinition(Required(estate, "Name"), CheckOwner(Required(estate, "Owner")), uuid,
                 estate["OwnerEmail"] is { Length: > 0 } email ? email : null),
             new InstanceSchedule(Text(schedule, "Restart"), Number(schedule, "WarnMinutes", 24 * 60), Text(schedule, "Backup")),
-            new InstanceBackups(iar, Number(backups, "KeepDaily", 1000), Number(backups, "KeepWeekly", 1000)));
+            new InstanceBackups(iar, Number(backups, "KeepDaily", 1000), Number(backups, "KeepWeekly", 1000)),
+            kind,
+            grid);
     }
 
     public IniDocument ToIni()
     {
         var doc = new IniDocument();
+        doc.Set("Instance", "Kind", IsRobust ? "robust" : "sim");
         doc.Set("Instance", "Build", Build);
         doc.Set("Instance", "ConfigSet", ConfigSet);
         doc.Set("Instance", "Database", Database == DatabaseKind.Sqlite ? "sqlite" : "mariadb");
-        doc.Set("Estate", "Name", Estate.Name);
-        doc.Set("Estate", "Owner", Estate.Owner);
-        doc.Set("Estate", "OwnerUUID", Estate.OwnerUuid?.ToString() ?? "");
-        doc.Set("Estate", "OwnerEmail", Estate.OwnerEmail ?? "");
+        if (Estate is { } estate)
+        {
+            doc.Set("Estate", "Name", estate.Name);
+            doc.Set("Estate", "Owner", estate.Owner);
+            doc.Set("Estate", "OwnerUUID", estate.OwnerUuid?.ToString() ?? "");
+            doc.Set("Estate", "OwnerEmail", estate.OwnerEmail ?? "");
+        }
+        if (Grid is { } grid)
+        {
+            doc.Set("Grid", "Host", grid.Host);
+            doc.Set("Grid", "PublicPort", grid.PublicPort.ToString(CultureInfo.InvariantCulture));
+            doc.Set("Grid", "PrivatePort", grid.PrivatePort.ToString(CultureInfo.InvariantCulture));
+            doc.Set("Grid", "Name", grid.Name);
+            doc.Set("Grid", "Nick", grid.Nick);
+            doc.Set("Grid", "DefaultRegion", grid.DefaultRegion ?? "");
+            if (grid.AssetsDir is { } assets)
+                doc.Set("Grid", "AssetsDir", assets);
+        }
 
         void Optional(string section, string key, string? value)
         {
@@ -155,8 +231,22 @@ public sealed partial record InstanceDefinition(
         return owner;
     }
 
+    private static string CheckDir(string file, string dir) =>
+        Path.IsPathRooted(dir) ? dir : throw new OsctlException($"{file}: [Grid] AssetsDir = {dir}: must be an absolute path");
+
+    /// <summary>A host name or IP address, as it goes into http://host:port.</summary>
+    public static string CheckHost(string host)
+    {
+        if (!HostPattern().IsMatch(host))
+            throw new OsctlException($"'{host}' is not a host name or IPv4 address");
+        return host;
+    }
+
     [GeneratedRegex(@"^[^\s""]+ [^\s""]+$")]
     private static partial Regex OwnerPattern();
+
+    [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?$")]
+    private static partial Regex HostPattern();
 }
 
 /// <summary>

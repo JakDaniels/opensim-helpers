@@ -218,6 +218,7 @@ public sealed class DirectSupervisor(
         var runnerLog = Path.Combine(instances.LogDir(name), "runner.log");
         Directory.CreateDirectory(Path.GetDirectoryName(runnerLog)!);
         File.Delete(instances.RunStateFile(name));
+        var logStart = File.Exists(runnerLog) ? new FileInfo(runnerLog).Length : 0;
         // setsid -f: the runner gets its own session and outlives this command and its terminal.
         var line = string.Join(' ', [.. osctl.Select(ShellQuote.Quote), "--root", ShellQuote.Quote(paths.Root), "run", ShellQuote.Quote(name)]);
         var r = await runner.RunAsync("setsid", ["-f", "sh", "-c", $"exec {line} >> {ShellQuote.Quote(runnerLog)} 2>&1 < /dev/null"],
@@ -236,11 +237,21 @@ public sealed class DirectSupervisor(
             if (state is not null)
                 seen = true;
             if ((seen && state is null) || (state is not null && !state.IsRunnerAlive))
-                throw new OsctlException($"'{name}' did not start; 'osctl logs {name}' and {runnerLog} show why");
+                throw new OsctlException(RunnerError(runnerLog, logStart) ?? $"'{name}' did not start; 'osctl logs {name}' and {runnerLog} show why");
+            // A runner that refused to start (a missing account, a port in use) has said why and ended.
+            if (!seen && RunnerError(runnerLog, logStart) is { } refused)
+                throw new OsctlException(refused);
             if (!seen && time.GetUtcNow() > deadline - TimeSpan.FromSeconds(settings.Timeouts.StartSeconds))
                 throw new OsctlException($"The runner for '{name}' did not start; see {runnerLog}");
         }
         throw new OsctlException($"'{name}' was not ready within {settings.Timeouts.StartSeconds + 30} s; 'osctl logs {name}'");
+    }
+
+    /// <summary>The error the runner ended with (its "osctl: " line in the runner log since <paramref name="from"/>), if any.</summary>
+    private static string? RunnerError(string runnerLog, long from)
+    {
+        var (text, _) = InstanceRunner.ReadFrom(runnerLog, from);
+        return text.Split('\n').LastOrDefault(l => l.StartsWith("osctl: ", StringComparison.Ordinal))?["osctl: ".Length..];
     }
 
     public async Task StopAsync(string name, bool force, CancellationToken ct)

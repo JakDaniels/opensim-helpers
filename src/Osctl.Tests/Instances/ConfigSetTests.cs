@@ -12,7 +12,7 @@ public class ConfigSetTests
     {
         using var f = new InstanceFixture();
         var store = new ConfigSetStore(f.Paths);
-        Assert.Equal(["osgrid", "standalone", "standalone-hg"], store.Names());
+        Assert.Equal(["osgrid", "robust-hg", "standalone", "standalone-hg"], store.Names());
 
         var standalone = store.Load("standalone");
         Assert.Equal(ConfigSetMode.Standalone, standalone.Mode);
@@ -29,11 +29,17 @@ public class ConfigSetTests
         Assert.Equal("osgrid", osgrid.GridFor("Anything"));
         Assert.All(osgrid.Files, x => Assert.Equal(FileSourceKind.Url, x.Kind));
         Assert.All(osgrid.Files, x => Assert.StartsWith("https://download.osgrid.org/", x.Source));
+
+        var robust = store.Load("robust-hg");
+        Assert.Equal(ConfigSetMode.Robust, robust.Mode);
+        Assert.Equal("MyGrid", robust.GridFor("MyGrid"));
+        Assert.Equal(["Robust.HG.ini"], robust.Load);
+        Assert.Contains(robust.Edits, e => e is { Section: "ServiceList", Key: "GroupsServiceConnector" });
     }
 
     [Theory]
     [InlineData("[ConfigSet]\nMode = grid\nLoad = a.ini\n", "Grid is needed")]
-    [InlineData("[ConfigSet]\nMode = sideways\nLoad = a.ini\n", "expected standalone or grid")]
+    [InlineData("[ConfigSet]\nMode = sideways\nLoad = a.ini\n", "expected standalone, grid or robust")]
     [InlineData("[ConfigSet]\nMode = standalone\n", "Load lists no files")]
     [InlineData("[ConfigSet]\nMode = standalone\nLoad = a.ini\n[Files]\n../etc/passwd = bin:x\n", "must be a path inside bin/")]
     [InlineData("[ConfigSet]\nMode = standalone\nLoad = a.ini\n[Set a.ini]\nNoBar = 1\n", "expected Section|Key")]
