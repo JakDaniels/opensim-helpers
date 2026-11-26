@@ -104,6 +104,9 @@ internal sealed class FakeRemoteAdmin : IRemoteAdmin
     /// <summary>What admin_save_oar does (region, file); returns the refusal, or null.</summary>
     public Func<string, string, string?>? OnSaveOar { get; set; }
 
+    /// <summary>What admin_load_oar does (region, file); returns the refusal, or null.</summary>
+    public Func<string, string, string?>? OnLoadOar { get; set; }
+
     /// <summary>What admin_console_command does; returns the refusal, or null.</summary>
     public Func<string, string?>? OnConsoleCommand { get; set; }
 
@@ -122,6 +125,9 @@ internal sealed class FakeRemoteAdmin : IRemoteAdmin
 
     public Task<string?> SaveOarAsync(int port, string password, string region, string file, CancellationToken ct) =>
         Task.FromResult(OnSaveOar is null ? "not answered" : OnSaveOar(region, file));
+
+    public Task<string?> LoadOarAsync(int port, string password, string region, string file, TimeSpan timeout, CancellationToken ct) =>
+        Task.FromResult(OnLoadOar is null ? "not answered" : OnLoadOar(region, file));
 
     public Task<string?> ConsoleCommandAsync(int port, string password, string command, CancellationToken ct)
     {

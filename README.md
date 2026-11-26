@@ -538,6 +538,8 @@ osctl visitors --csv > visitors.csv         also --json
 - **IARs** (inventories) of the users listed in `instance.ini` `[Backups] Iar`, or given with `--iar "First Last"`;
 - **for a grid:** its databases, then its asset files in `fsassets/` (FSAssets' `data/`, and in `spool/` any assets
   not yet written out), running or not;
+- `definition/`: osctl's own definition of the instance (`instance.ini`, its regions, overrides, start-up and
+  shutdown commands, and the config sets it uses), so a lost instance can be made again. Not `secrets.ini`;
 - `backup.ini`, which lists every file and whether it was saved.
 
 **A grid's asset files** never change once written, and each is named after its content's SHA-256. So each backup
@@ -546,9 +548,7 @@ Every backup directory is whole on its own, yet a week of backups takes little m
 `backup list` shows each backup's full size, with how much of it was new. Use `du` for the space on disk, since it
 counts a linked file once. If no hard link can be made, the file is copied. A new file that does not match its hash
 is most likely still being written: it is left for the next backup. An older one is copied as it is, with a warning.
-A grid's inventories (IARs) are saved by one of its simulators, not by the grid. To restore a grid, load the
-database dump and copy `fsassets/data/` and `fsassets/spool/*` back into the grid's `data/` and `tmp/` while it is
-stopped.
+A grid's inventories (IARs) are saved by one of its simulators, not by the grid.
 
 OARs and IARs need the instance running, since OpenSim writes them. For a stopped instance only the databases are
 saved, and those hold everything anyway. `--oar`, `--db` and `--iar` choose parts. A backup with a failed part is
@@ -564,6 +564,41 @@ osctl backup create Test1                   OARs, databases, IARs from instance.
 osctl backup create Test1 --db              only the databases (for a grid, its asset files too)
 osctl backup list                           every backup, its size, and whether it is complete
 osctl backup prune --dry-run                what pruning would remove
+```
+
+### Restoring
+
+`osctl backup restore <instance> [<backup>]` puts a backup back into the instance it came from (never into another
+one). `<backup>` is a name from `backup list`, or the path to a backup directory copied from elsewhere. Without it,
+the newest complete backup is used. The command first shows what it would do; add `--yes` to do it. Before changing
+anything it backs the instance up as it is now, so a restore can itself be undone (`--no-backup` skips that).
+
+| Part | Option | Instance | What it does |
+|---|---|---|---|
+| Databases | `--db` | stopped | Replaces each database (MariaDB: dropped, then loaded from the dump; SQLite: the file replaced) |
+| Asset files | `--assets` | stopped | A grid: replaces its FSAssets files with the backup's |
+| Definition | `--definition` | stopped | Puts back `instance.ini`, the regions, overrides and commands; makes a lost instance again |
+| OAR | `--oar "Region"` | running | Replaces everything in that region with its OAR (repeat for more regions) |
+| IAR | `--iar "First Last"` | running | Loads the user's IAR into their inventory: added to what is there, not replacing it |
+
+With none of these options, osctl restores the databases and, for a grid, its asset files. If the instance no longer
+exists, it also restores the definition. The databases hold the regions, assets and inventories, so OARs and IARs
+are not needed for a whole restore. Parts that need the instance stopped and parts that need it running are
+restored in two goes.
+
+**Shared estates:** a grid's simulators keep their estates in the grid's estate database, and each simulator's
+backup holds a copy of it. Restoring one simulator leaves that database alone, so it cannot wind back the other
+simulators' estates. `--with-estates` restores it anyway. Restoring the grid itself always includes it.
+
+**A lost instance:** the build it uses must exist (`osctl build add`), and its ports must be free. It gets a new
+RemoteAdmin password. Passwords are not in backups, so store a standalone's estate owner password and any IAR
+passwords again with `osctl backup iar-password`. Then `osctl start` it, and `osctl enable` it to start at boot.
+
+```
+osctl backup restore Test1                           show what restoring the newest backup would do
+osctl backup restore Test1 --yes                     restore its databases (Test1 stopped)
+osctl backup restore Test1 20261126-030000 --oar "Home" --yes    one region from that backup's OAR (Test1 running)
+osctl backup restore Test1 /mnt/old/Test1/20261126-030000 --yes  make a lost Test1 again from a copied backup
 ```
 
 **Pruning** keeps the newest backup, plus the newest of each of the last 7 days and the last 4 weeks that have one.

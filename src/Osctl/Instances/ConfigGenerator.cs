@@ -255,7 +255,8 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
             Set("Estates", "DefaultEstateOwnerEMail", estate.OwnerEmail ?? "");
             var password = instances.OwnerPassword(name);
             if (string.IsNullOrEmpty(password))
-                warnings.Add($"Instance '{name}' has no estate owner password ({instances.SecretsFile(name)}); OpenSim would ask for one");
+                warnings.Add($"Instance '{name}' has no estate owner password ({instances.SecretsFile(name)}): OpenSim asks for one " +
+                    $"if it has to make the estate, and the owner's IARs need it ('osctl backup iar-password {name} \"{estate.Owner}\"')");
             else
                 Set("Estates", "DefaultEstateOwnerPassword", password);
         }

@@ -358,6 +358,23 @@ counts down (warning time, 5 min, 1 min); in direct mode `osctl schedule` prints
   (the files and their index belong together); `backup.ini [Assets]` keeps the counts. Tried on the dev grid: 423
   files, 11.5 MiB, in about a second; the next backup linked them all (48 KB on disk); every hash in the dumped
   index was in the snapshot.
+- **Definition:** each backup holds `definition/` (instance.ini, regions/, overrides/, start-up and shutdown commands,
+  the config sets it uses; a grid also its simulators' set), decided 2026-11-26, so a lost instance can be made
+  again. Not secrets.ini, as backups are often copied off the machine.
+- **Restore** (decided 2026-11-26): `osctl backup restore <instance> [<backup name or dir>]`, only into the instance
+  the backup came from (no `--to`: a simulator's database is keyed by region UUID). Parts: `--db`, `--assets`,
+  `--definition` (instance stopped), `--oar <region>`, `--iar <user>` (running: RemoteAdmin `admin_load_oar`, which
+  answers once loaded, then `[ARCHIVER]: Successfully loaded archive`; `load iar` through `admin_console_command`,
+  then `[INVENTORY ARCHIVER]: Loaded N items … for First Last`). None given: databases and assets, and the
+  definition when the instance is gone. Always a backup of the instance as it is first (`--no-backup`), and a plan
+  shown until `--yes`. MariaDB: drop, create, feed the dump to `mariadb`. SQLite: the file replaced and its
+  `-wal`/`-shm`/`-journal` removed. Assets: `data/` replaced, the spool's files put back in `tmp/`. A simulator's
+  estate database is left alone when other instances share it (a grid's simulators) unless `--with-estates`.
+  A definition restore checks the build exists and the ports are free, writes the config sets only where missing, and
+  makes a new secrets.ini (new RemoteAdmin password). Tried on the dev root: an OAR into the running Sim1 (6 s, with
+  the backup first), the whole TestGrid (two MariaDB loads and 423 asset files in 2 s; Robust and Sim1 started and
+  the owner check passed), and Test1 deleted and made again from a copied backup (same definition and region UUIDs,
+  started).
 - **Not running:** OARs and IARs are skipped (OpenSim writes them); the databases hold everything.
 - **Pruning:** of the complete backups, keep the newest, and the newest of each of the last `KeepDaily` days and
   `KeepWeekly` ISO weeks that have one; an incomplete backup goes once a newer complete one exists.

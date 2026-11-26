@@ -199,6 +199,20 @@ internal sealed class FakeDatabases : IDatabaseFactory, IDatabaseAdmin, IDatabas
         return Task.CompletedTask;
     }
 
+    /// <summary>The dumps loaded: (database, the dump's text).</summary>
+    public List<(string Database, string Text)> Loaded { get; } = [];
+
+    public Task LoadAsync(string database, string dumpFile, CancellationToken ct)
+    {
+        Existing.Add(database);
+        using var stream = File.OpenRead(dumpFile);
+        using var text = dumpFile.EndsWith(".gz", StringComparison.Ordinal)
+            ? new StreamReader(new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress))
+            : new StreamReader(stream);
+        Loaded.Add((database, text.ReadToEnd()));
+        return Task.CompletedTask;
+    }
+
     /// <summary>Called as each database is dumped.</summary>
     public Action<string>? OnDump { get; set; }
 

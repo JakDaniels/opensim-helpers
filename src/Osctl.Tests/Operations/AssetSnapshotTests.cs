@@ -102,7 +102,7 @@ public class AssetSnapshotTests
 
         var backup = new BackupStore(f.Paths, global::Osctl.Settings.SettingsLoader.Load(f.Paths).Settings).List("MyGrid").Single();
         Assert.True(backup.Complete);
-        Assert.Equal(["fsassets", "opensim_MyGrid.sql.gz", "opensim_estate_MyGrid.sql.gz"],
+        Assert.Equal(["definition", "fsassets", "opensim_MyGrid.sql.gz", "opensim_estate_MyGrid.sql.gz"],
             backup.Items.Select(i => i.File).Order(StringComparer.Ordinal));
         Assert.True(File.Exists(Path.Combine(backup.Dir, AssetSnapshot.Dir, "spool", stored!)));
         Assert.Equal(2, backup.Assets!.Files);

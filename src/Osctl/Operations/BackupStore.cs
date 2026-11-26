@@ -44,34 +44,48 @@ public sealed class BackupStore(OsctlPaths paths, OsctlSettings settings)
         var result = new List<BackupInfo>();
         foreach (var dir in Directory.GetDirectories(root))
         {
-            var name = Path.GetFileName(dir);
-            if (!DateTime.TryParseExact(name, NameFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
-                continue;
-            var items = new List<BackupItem>();
-            AssetCounts? assets = null;
-            var complete = false;
-            var manifest = Path.Combine(dir, Manifest);
-            if (File.Exists(manifest))
-            {
-                var doc = IniParser.ParseFile(manifest);
-                complete = doc.Get("Backup", "Complete") == "true";
-                foreach (var entry in doc["Items"]?.Entries ?? [])
-                {
-                    var parts = entry.Value.Split('|', 2);
-                    items.Add(new BackupItem(entry.Key, parts[0], parts.Length > 1 && parts[1].Length > 0 ? parts[1] : null));
-                }
-                if (doc["Assets"] is not null)
-                {
-                    int Count(string key) => int.TryParse(doc.Get("Assets", key), CultureInfo.InvariantCulture, out var n) ? n : 0;
-                    assets = new AssetCounts(Count("Files"), Count("Copied"),
-                        long.TryParse(doc.Get("Assets", "CopiedBytes"), CultureInfo.InvariantCulture, out var b) ? b : 0,
-                        Count("Skipped"), []);
-                }
-            }
-            var bytes = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
-            result.Add(new BackupInfo(instance, name, dir, time, complete, bytes, items, assets));
+            if (DateTime.TryParseExact(Path.GetFileName(dir), NameFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                result.Add(Read(dir, instance));
         }
         return [.. result.OrderBy(b => b.Time)];
+    }
+
+    /// <summary>
+    /// One backup directory, from its manifest; <paramref name="instance"/> when known, else the manifest's.
+    /// Its time is its name's, or the manifest's start for a directory renamed since.
+    /// </summary>
+    public static BackupInfo Read(string dir, string? instance = null)
+    {
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(dir));
+        var items = new List<BackupItem>();
+        AssetCounts? assets = null;
+        var complete = false;
+        var manifest = Path.Combine(dir, Manifest);
+        DateTime? started = null;
+        if (File.Exists(manifest))
+        {
+            var doc = IniParser.ParseFile(manifest);
+            complete = doc.Get("Backup", "Complete") == "true";
+            instance ??= doc.Get("Backup", "Instance");
+            if (DateTimeOffset.TryParse(doc.Get("Backup", "Started"), CultureInfo.InvariantCulture, DateTimeStyles.None, out var t))
+                started = t.LocalDateTime;
+            foreach (var entry in doc["Items"]?.Entries ?? [])
+            {
+                var parts = entry.Value.Split('|', 2);
+                items.Add(new BackupItem(entry.Key, parts[0], parts.Length > 1 && parts[1].Length > 0 ? parts[1] : null));
+            }
+            if (doc["Assets"] is not null)
+            {
+                int Count(string key) => int.TryParse(doc.Get("Assets", key), CultureInfo.InvariantCulture, out var n) ? n : 0;
+                assets = new AssetCounts(Count("Files"), Count("Copied"),
+                    long.TryParse(doc.Get("Assets", "CopiedBytes"), CultureInfo.InvariantCulture, out var b) ? b : 0,
+                    Count("Skipped"), []);
+            }
+        }
+        var time = DateTime.TryParseExact(name, NameFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var named)
+            ? named : started ?? Directory.GetCreationTime(dir);
+        var bytes = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
+        return new BackupInfo(instance ?? "", name, dir, time, complete, bytes, items, assets);
     }
 
     public static void WriteManifest(string dir, string instance, DateTimeOffset started, DateTimeOffset finished,

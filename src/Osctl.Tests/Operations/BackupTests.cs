@@ -105,7 +105,7 @@ public class BackupTests
 
         var backup = new BackupStore(f.Paths, Settings(f)).List("A").Single();
         Assert.True(backup.Complete, output);
-        Assert.Equal(["Away.oar", "Home_Sweet.oar", "Test_User.iar", "opensim_A.sql.gz", "opensim_estate_standalone-A.sql.gz"],
+        Assert.Equal(["Away.oar", "Home_Sweet.oar", "Test_User.iar", "definition", "opensim_A.sql.gz", "opensim_estate_standalone-A.sql.gz"],
             backup.Items.Select(i => i.File).Order(StringComparer.Ordinal));
         Assert.Null(BackupRunner.CheckArchive(Path.Combine(backup.Dir, "Home_Sweet.oar")));
         await using (var gz = new GZipStream(File.OpenRead(Path.Combine(backup.Dir, "opensim_A.sql.gz")), CompressionMode.Decompress))
@@ -156,7 +156,7 @@ public class BackupTests
         Assert.Contains("not running, so no OARs", output);
         var backup = new BackupStore(f.Paths, Settings(f)).List("A").Single();
         Assert.True(backup.Complete);
-        Assert.Equal("OpenSim.db.gz", backup.Items.Single().File);
+        Assert.Equal(["OpenSim.db.gz", "definition"], backup.Items.Select(i => i.File).Order(StringComparer.Ordinal));
     }
 
     [Fact]

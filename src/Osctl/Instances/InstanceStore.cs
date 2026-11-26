@@ -136,6 +136,12 @@ public sealed class InstanceStore(OsctlPaths paths)
         foreach (var file in new[] { StartupCommandsFile(name), ShutdownCommandsFile(name) })
             File.WriteAllText(file, "; Console commands, one per line, run at start-up or shutdown. Lines starting with ; are comments.\n");
 
+        WriteSecrets(name, ownerPassword, remoteAdminPassword);
+    }
+
+    /// <summary>Writes a new secrets.ini (there must be none), readable by the group only.</summary>
+    public void WriteSecrets(string name, string? ownerPassword, string remoteAdminPassword)
+    {
         var secrets = new IniDocument();
         secrets.Set("Estate", "OwnerPassword", ownerPassword ?? "");
         secrets.Set("RemoteAdmin", "Password", remoteAdminPassword);
