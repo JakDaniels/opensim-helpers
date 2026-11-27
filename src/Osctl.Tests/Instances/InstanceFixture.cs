@@ -95,7 +95,8 @@ internal sealed class InstanceFixture : IDisposable
             File.WriteAllText(path, text);
         }
 
-        W("OpenSimDefaults.ini", "[Startup]\n    physics = ubODE\n    crash_dir = crashes\n[Network]\n    http_listener_port = 9000\n[Mesh]\n    MeshFileCache = true\n");
+        W("OpenSimDefaults.ini", "[Startup]\n    physics = ubODE\n    crash_dir = crashes\n[Network]\n    http_listener_port = 9000\n[Mesh]\n    MeshFileCache = true\n" +
+            "[NPC]\n    ;; Enabled = true\n");
         W("OpenSim.ini.example",
             "[Startup]\n    physics = BulletSim\n[Architecture]\n    Include-Architecture = \"config-include/Standalone.ini\"\n");
         W("config-include/Standalone.ini", "[Modules]\n    AssetServices = LocalAssetServicesConnector\n    Include-Common = \"config-include/StandaloneCommon.ini\"\n");

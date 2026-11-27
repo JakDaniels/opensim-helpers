@@ -29,6 +29,7 @@ public class ConfigGeneratorTests
         Assert.Equal("LocalAssetServicesConnector", c.Get("Modules", "AssetServices"));  // from the include chain
         Assert.DoesNotContain(c.Sections, s => s.Keys.Any(k => k.StartsWith("Include-")));
         Assert.Null(c["Architecture"]);                                             // emptied by removing its include
+        Assert.NotNull(c["NPC"]);                       // empty but kept: NPCModule is off without its section
 
         Assert.Equal("9000", c.Get("Network", "http_listener_port"));
         Assert.Equal("9500", c.Get("Network", "http_listener_sslport"));
@@ -144,6 +145,7 @@ public class ConfigGeneratorTests
 
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead,
             File.GetUnixFileMode(Path.Combine(dir, "OpenSim.ini")));
+        Assert.Contains("\n[NPC]\n", File.ReadAllText(Path.Combine(dir, "OpenSim.ini")));   // written even though empty
         Assert.True(File.Exists(Path.Combine(dir, "Regions", "Regions.ini")));
         Assert.True(Directory.Exists(Path.Combine(dir, "config")));
         var log4net = File.ReadAllText(Path.Combine(dir, "log4net.config"));

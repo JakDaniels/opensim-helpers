@@ -114,11 +114,15 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         config.Merge(forced);
         layers.Add(new IniLayer(OsctlLayer, OsctlLayer, forced));
 
+        // Includes have been followed, so they go; a section that held only includes ([Architecture]) goes with
+        // them. Other empty sections stay: OpenSim keeps them, and some modules are on only when their section
+        // exists ([NPC]: NPCModule checks config != null before reading Enabled, whose default is true).
         foreach (var section in config.Sections.ToList())
         {
-            foreach (var key in section.Keys.Where(IsInclude).ToList())
+            var includes = section.Keys.Where(IsInclude).ToList();
+            foreach (var key in includes)
                 section.Remove(key);
-            if (section.Count == 0)
+            if (section.Count == 0 && includes.Count > 0)
                 config.RemoveSection(section.Name);
         }
 
