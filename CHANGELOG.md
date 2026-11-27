@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.4.2 (2026-11-27)
+
 - osctl: NPCs work again. The generated OpenSim.ini dropped sections with nothing set in them, and OpenSim
   turns NPCs off when `[NPC]` is missing; empty sections are now kept, as OpenSim keeps them.
 
