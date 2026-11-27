@@ -5,10 +5,13 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.4.1 (2026-11-27)
+
 - osctl: `osctl grid start|stop|restart <grid>` works on a grid and its simulators together: the grid starts first
   and stops last, and a restart brings back the simulators that were running.
 - osctl: `osctl config tree` lists only the files osctl reads (others are counted; `--all` lists them), and for an
   instance not yet moved to /etc only its definition, not its data and asset files.
+
 ## 0.4.0 (2026-11-27)
 
 - osctl: `osctl config tree` shows the files under /etc/osctl as a tree with what each one is, and
