@@ -18,6 +18,28 @@ internal static class ConfigCommands
         command.Add(Diff(env, globals));
         command.Add(Generate(env, globals));
         command.Add(Set(env, globals));
+        command.Add(Tree(env, globals));
+        return command;
+    }
+
+    private static Command Tree(CliEnvironment env, GlobalOptions globals)
+    {
+        var instance = new Argument<string?>("instance")
+        {
+            Description = "An instance: the files its configuration is made from, in the order they are read",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+        var command = new Command("tree",
+            "Show the configuration as a tree: the files under /etc/osctl, or for an instance the files its configuration is made from")
+        { instance };
+        CliApp.SetAction(command, env, async (parse, _) =>
+        {
+            var tree = new ConfigTree(globals.Paths(parse), globals.Settings(parse));
+            var name = parse.GetValue(instance);
+            foreach (var line in Util.TextTree.Render(name is null ? tree.Files() : tree.Instance(name)))
+                await env.Out.WriteLineAsync(line);
+            return 0;
+        });
         return command;
     }
 

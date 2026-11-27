@@ -4,7 +4,9 @@
 namespace Osctl.Ini;
 
 /// <summary>One file as it was merged: its path as OpenSim would see it, where it was read from, and its contents.</summary>
-public sealed record IniLayer(string Path, string ReadFrom, IniDocument Document);
+/// <param name="IncludedBy">The file (as read, like <paramref name="ReadFrom"/>) whose Include-* key brought this one in;
+/// null for a file given to the loader, or an include added some other way (a config set's edits).</param>
+public sealed record IniLayer(string Path, string ReadFrom, IniDocument Document, string? IncludedBy = null);
 
 /// <summary>The result of loading files with their includes.</summary>
 public sealed record IniLoadResult(
@@ -64,6 +66,7 @@ public static class IniLoader
         var warnings = new List<string>();
         var read = new List<string>();
         var layers = new List<IniLayer>();
+        var includedBy = new Dictionary<string, string?>();
 
         for (var i = 0; i < sources.Count; i++)
         {
@@ -76,8 +79,8 @@ public static class IniLoader
             options.Edit?.Invoke(relative, doc);
             result.Merge(doc);
             read.Add(sources[i]);
-            layers.Add(new IniLayer(relative, actual, doc));
-            AddIncludes(result, baseDir, sources, warnings, options);
+            layers.Add(new IniLayer(relative, actual, doc, includedBy.GetValueOrDefault(sources[i])));
+            AddIncludes(result, baseDir, sources, warnings, options, includedBy);
         }
 
         return new IniLoadResult(result, read, warnings, layers);
@@ -92,7 +95,8 @@ public static class IniLoader
     private static string ReadFrom(IniLoadOptions options, string relative, string full) =>
         options.Overlay?.Invoke(relative) ?? full;
 
-    private static void AddIncludes(IniDocument doc, string baseDir, List<string> sources, List<string> warnings, IniLoadOptions options)
+    private static void AddIncludes(IniDocument doc, string baseDir, List<string> sources, List<string> warnings, IniLoadOptions options,
+        Dictionary<string, string?> includedBy)
     {
         foreach (var section in doc.Sections)
         {
@@ -137,7 +141,10 @@ public static class IniLoader
                 foreach (var match in matches)
                 {
                     if (!sources.Contains(match))
+                    {
                         sources.Add(match);
+                        includedBy[match] = entry.Origin?.File;
+                    }
                 }
             }
         }

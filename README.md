@@ -277,6 +277,30 @@ To see the result, and where each value comes from:
 osctl config show Test1 --section Startup Network   # the configuration it would start with now
 osctl config explain Test1 Startup physics          # every file that set it, in order, and the final value
 osctl config diff Test1                             # what changed since its last start
+osctl config tree                                   # every file under /etc/osctl, with what each one is
+osctl config tree Test1                             # the files Test1's configuration is made from, in order
+```
+
+`osctl config tree Test1` numbers the files in the order they are read (a later one wins), with each include under
+the file that includes it:
+
+```
+Test1                                       standalone, build sas-dev, sqlite
+├── paths relative to                       /etc/osctl
+├── config set files from                   /var/lib/osctl/builds/sas-dev/current/bin
+├── OpenSim.ini                             read in this order, later wins
+│   ├── config set standalone               configsets/standalone.ini
+│   │   ├── 1. OpenSimDefaults.ini
+│   │   └── 2. OpenSim.ini                  from OpenSim.ini.example
+│   │       └── 3. config-include/Standalone.ini
+│   │           └── 4. config-include/StandaloneCommon.ini  from config-include/StandaloneCommon.ini.example
+│   ├── 5. overrides/50-osctl.ini           every instance
+│   ├── 6. instances/Test1/overrides/10-physics.ini  this instance
+│   └── 7. set by osctl
+└── Regions.ini                             for each region, in this order, later wins
+    ├── 1. region-defaults.ini              [Region Defaults] for every region
+    ├── 2. instances/Test1/region-defaults.ini
+    └── 3. instances/Test1/regions/Regions.ini  Welcome, Second Place
 ```
 
 Passwords are shown as `********` unless you add `--show-secrets`. Changes take effect at the instance's next
@@ -686,7 +710,9 @@ timers.
 
 ## Command reference
 
-`osctl --help` and `osctl <command> --help` give the options of each command.
+`osctl --help` and `osctl <command> --help` (or `osctl help <command>`) give the options of each command.
+`osctl help --tree` shows every command and subcommand as a tree; add `--options` for their arguments and
+options, and name a command for only that branch: `osctl help --tree --options region`.
 
 | Command | What it does |
 |---|---|
@@ -697,10 +723,13 @@ timers.
 | `osctl configset list\|show\|fetch` | Config sets. |
 | `osctl instance add\|list\|show\|delete` | Instances. |
 | `osctl region add\|list\|remove\|rename\|move\|set\|get` | Regions. `rename` and `move` keep the region's UUID, so its contents stay. |
+| `osctl region defaults get\|set --global\|--instance <instance>` | Region defaults, for every region or one instance's. |
 | `osctl list` | Every instance with its regions. |
 | `osctl grid add\|list\|show\|set` | Grids of your own: a Robust instance and the config set its simulators use. |
 | `osctl user create\|password <grid> "First Last"` | Accounts on a running grid or standalone. |
 | `osctl config show\|explain\|diff\|generate` | An instance's generated configuration. |
+| `osctl config set <section> Key=Value… --global\|--instance <instance>` | OpenSim.ini overrides, without editing files. |
+| `osctl config tree [instance]` | The files under `/etc/osctl`, or the files an instance's configuration is made from, as a tree. |
 | `osctl db init` | Sets up MariaDB (as root). |
 | `osctl start\|stop\|restart [instance…]` | All instances when none is named. `stop --force` kills straight away; `--warn 10m` warns people in-world first. |
 | `osctl status [instance…]` | Running, starting, stopped, broken; PID, uptime, release. |
@@ -712,6 +741,7 @@ timers.
 | `osctl backup create\|list\|prune\|iar-password` | Backups: OARs, databases, IARs. |
 | `osctl schedule restart\|backup\|remove\|list` | Scheduled restarts (with warnings) and backups. |
 | `osctl units install [--user]\|show` | The systemd units: instances, and the scheduled jobs' services and timers. |
+| `osctl help [command…] [--tree [--options]]` | Help, or every command as a tree. |
 
 **Options for every command:**
 

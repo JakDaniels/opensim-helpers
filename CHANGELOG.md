@@ -5,6 +5,10 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: `osctl config tree` shows the files under /etc/osctl as a tree with what each one is, and
+  `osctl config tree <instance>` the files its configuration is made from, in the order they are read.
+- osctl: `osctl help --tree` shows every command as a tree (`--options` adds their options), and
+  `osctl help <command>` is the same as `--help`.
 - osctl: each instance's definition (instance.ini, secrets, regions, overrides, start-up and shutdown commands)
   is now in `/etc/osctl/instances/<name>/`, so all configuration is under `/etc/osctl`; existing instances are
   moved there by the first osctl command once they are stopped. `/var/lib/osctl` keeps their data and backups.
