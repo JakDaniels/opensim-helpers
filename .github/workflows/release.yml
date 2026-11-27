@@ -80,7 +80,9 @@ jobs:
           tested=""
           for candidate in "$sha" $(git rev-parse -q --verify "$sha^2" || true); do
             git diff --quiet "$candidate" "$sha" || continue
-            passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$candidate&status=success" -q .total_count)"
+            # Filtered here, not with the API's status=success, whose index can lag a finished run for many minutes.
+            passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$candidate&per_page=100" \
+              -q '[.workflow_runs[] | select(.conclusion == "success")] | length')"
             if [ "$passed" != 0 ]; then tested="$candidate"; break; fi
           done
           [ -n "$tested" ] || fail "ci.yml has not passed for $sha (nor for the same files): run it on main (Actions, ci, Run workflow), then tag by hand (scripts/make-release.sh)"
