@@ -78,6 +78,7 @@ public sealed class Initializer(OsctlPaths paths)
         paths.ConfigSetsDir,
         paths.GlobalOverridesDir,
         paths.BuildDefinitionsDir,
+        paths.InstanceConfigsDir,
         paths.Lib,
         paths.BuildsDir,
         paths.InstancesDir,

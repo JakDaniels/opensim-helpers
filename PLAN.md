@@ -56,22 +56,34 @@ what aged badly. It is written in C# on .NET 10.
   overrides/*.ini           global overrides, alphabetical
   region-defaults.ini       [Region Defaults] applied to every region
   builds/<build>.ini        build definitions (repo, ref, addons, patches)
+  instances/<name>/         the instance's definition (what people set; osctl's commands write it too)
+    instance.ini            kind (sim/robust), build, config set, database, estate, schedule
+    secrets.ini             estate owner, RemoteAdmin and IAR passwords (0640)
+    overrides/*.ini         instance overrides (50-osctl.ini: written by 'osctl config set')
+    region-defaults.ini     [Region Defaults] for the instance's regions, over the global ones
+    regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
+    startup_commands.txt, shutdown_commands.txt
 /var/lib/osctl/
   builds/<build>/src/       git clone
   builds/<build>/releases/<yyyymmdd-hhmm>-<commit>/   built output (bin/)
   builds/<build>/current -> releases/…
   configsets/<set>/         cached downloaded files
-  instances/<name>/
-    instance.ini            kind (sim/robust), build, config set, database, estate, schedule
-    overrides/*.ini         instance overrides
-    regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
-    startup_commands.txt, shutdown_commands.txt
+  instances/<name>/         what the instance makes
     generated/              OpenSim.ini (combined, 0640), Regions/, config/ (empty), log4net.config — rebuilt on each start
     scriptengines/, data/ (SQLite files), backups/
 /var/cache/osctl/assets/<grid>/   Flotsam asset cache, one per grid (sharing between grids is wrong, as MIOS noted)
 /var/log/osctl/<name>/      OpenSim.log, console history
 /run/osctl/                 tmux sockets, PID files
 ```
+
+All configuration is in one tree, `/etc/osctl`; `/var/lib/osctl` holds only what osctl and OpenSim make (builds,
+generated files, data, backups) and `/run/osctl` the run state. Instances made by osctl 0.3 and earlier kept their
+definition in `/var/lib/osctl/instances/<name>/`: every osctl command (not `--dry-run`) first moves the definition
+of each stopped one to `/etc` (copy to a staging directory, rename into place, then remove the old files, since
+`/etc` and `/var` may be separate file systems). A running one is read where it is until it stops, because its
+generated OpenSim.ini points at its start-up and shutdown command files. `Instances/InstanceLayout.cs`; to be
+removed in a later release. Commands so nobody edits files by hand: `osctl region defaults get|set`
+(`--global` or `--instance`), `osctl config set <section> Key=Value … --global|--instance` (into `50-osctl.ini`).
 
 Instance names: letters, digits, `_` and `-` only (so they work unchanged as unit names, tmux sockets and DB
 names). Region names follow OpenSim's rules (MIOS's regex, plus anything OpenSim itself accepts).
@@ -199,8 +211,9 @@ For each start (and for `osctl config show`), in order, later wins:
      followed); SQLite: every `URI=file:` connection string moved into the instance's `data/`.
 
 `Include-*` keys are removed from the result (they have been followed), and so are sections left empty.
-Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `region-defaults.ini`,
-then the instance's other `regions/*.ini` (per-region module settings, by region name), then `regions/Regions.ini`;
+Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `/etc/osctl/region-defaults.ini`,
+then from the instance's `region-defaults.ini`, then the instance's other `regions/*.ini` (per-region module settings,
+by region name), then `regions/Regions.ini`;
 written to `generated/Regions/Regions.ini`. `osctl config show|explain|diff|generate` work on this; passwords are
 shown as `********` unless `--show-secrets`.
 

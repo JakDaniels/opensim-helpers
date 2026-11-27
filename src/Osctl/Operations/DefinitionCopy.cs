@@ -9,14 +9,16 @@ namespace Osctl.Operations;
 
 /// <summary>
 /// osctl's own definition of an instance, kept in each backup as <c>definition/</c> (PLAN.md "Backups and scheduled
-/// restarts"), so that a lost instance can be made again by <c>backup restore</c>: instance.ini, regions/,
-/// overrides/, the start-up and shutdown commands, and the config sets it uses (for a grid also its simulators').
+/// restarts"), so that a lost instance can be made again by <c>backup restore</c>: what is in
+/// /etc/osctl/instances/&lt;name&gt; (instance.ini, regions/, overrides/, region-defaults.ini, the start-up and shutdown
+/// commands) and the config sets it uses.
 /// Not secrets.ini: backups are often copied off the machine.
 /// </summary>
 public static class DefinitionCopy
 {
     public const string Dir = "definition";
     private const string ConfigSets = "configsets";
+    private const string RegionDefaults = "region-defaults.ini";
 
     /// <summary>Copies the instance's definition into <c>&lt;backup&gt;/definition</c>.</summary>
     public static void Save(OsctlPaths paths, InstanceDefinition instance, string backupDir)
@@ -25,6 +27,7 @@ public static class DefinitionCopy
         var target = Path.Combine(backupDir, Dir);
         var name = instance.Name;
         CopyFile(store.DefinitionFile(name), Path.Combine(target, "instance.ini"));
+        CopyFile(store.RegionDefaultsFile(name), Path.Combine(target, RegionDefaults));
         CopyFile(store.StartupCommandsFile(name), Path.Combine(target, Path.GetFileName(store.StartupCommandsFile(name))));
         CopyFile(store.ShutdownCommandsFile(name), Path.Combine(target, Path.GetFileName(store.ShutdownCommandsFile(name))));
         CopyTree(store.RegionsDir(name), Path.Combine(target, "regions"));
@@ -52,10 +55,11 @@ public static class DefinitionCopy
     {
         var store = new InstanceStore(paths);
         var source = Path.Combine(backupDir, Dir);
-        foreach (var dir in new[] { store.Dir(name), store.GeneratedDir(name), store.ScriptEnginesDir(name), store.DataDir(name),
-                     store.AddinsDir(name), store.BackupsDir(name) })
-            Directory.CreateDirectory(dir);
+        store.CreateDirectories(name);
         CopyFile(Path.Combine(source, "instance.ini"), store.DefinitionFile(name), overwrite: true);
+        // Replaced like the rest: none in the backup means the instance had none.
+        File.Delete(store.RegionDefaultsFile(name));
+        CopyFile(Path.Combine(source, RegionDefaults), store.RegionDefaultsFile(name));
         foreach (var file in new[] { store.StartupCommandsFile(name), store.ShutdownCommandsFile(name) })
             CopyFile(Path.Combine(source, Path.GetFileName(file)), file, overwrite: true);
         foreach (var (from, to) in new[] { ("regions", store.RegionsDir(name)), ("overrides", store.OverridesDir(name)) })

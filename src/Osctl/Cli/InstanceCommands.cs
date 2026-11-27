@@ -50,8 +50,8 @@ internal static class InstanceCommands
             var sets = new ConfigSetStore(paths);
 
             var instanceName = Names.CheckInstance(parse.GetRequiredValue(name));
-            if (store.Exists(instanceName) || Directory.Exists(store.Dir(instanceName)))
-                throw new OsctlException($"Instance '{instanceName}' already exists ({store.Dir(instanceName)})");
+            if (store.Exists(instanceName) || store.AnyOnDisk(instanceName))
+                throw new OsctlException($"Instance '{instanceName}' already exists ({store.ConfigDir(instanceName)})");
 
             var buildName = parse.GetValue(build) ?? settings.Defaults.Build
                 ?? (builds.Names() is [var only] ? only
@@ -92,7 +92,7 @@ internal static class InstanceCommands
 
             if (globals.IsDryRun(parse))
             {
-                await env.Out.WriteLineAsync($"would create instance '{instanceName}' in {store.Dir(instanceName)}:");
+                await env.Out.WriteLineAsync($"would create instance '{instanceName}' in {store.ConfigDir(instanceName)}:");
                 await env.Out.WriteAsync(Ini.IniWriter.ToText(instance.ToIni()));
                 if (!sets.IsFetched(set))
                     await sets.FetchAsync(set, env.Web, dryRun: true, env.Out, ct);
@@ -164,7 +164,7 @@ internal static class InstanceCommands
                 await env.Out.WriteLineAsync(JsonSerializer.Serialize(info, CliApp.Json));
                 return 0;
             }
-            await env.Out.WriteLineAsync($"Instance:   {info.Name} ({store.Dir(info.Name)})");
+            await env.Out.WriteLineAsync($"Instance:   {info.Name} ({store.ConfigDir(info.Name)}, {store.Dir(info.Name)})");
             await env.Out.WriteLineAsync($"Build:      {info.Build}");
             await env.Out.WriteLineAsync($"Config set: {info.ConfigSet}");
             await env.Out.WriteLineAsync($"Database:   {info.Database}");
@@ -201,7 +201,7 @@ internal static class InstanceCommands
                     $"Grid '{instance.Name}' still has simulator instances ({string.Join(", ", sims.Select(i => i.Name))}); delete them first");
             if (globals.IsDryRun(parse) || !parse.GetValue(yes))
             {
-                await env.Out.WriteLineAsync($"would delete instance '{instance.Name}' ({regions.Count} region(s)): {store.Dir(instance.Name)} and {store.LogDir(instance.Name)}");
+                await env.Out.WriteLineAsync($"would delete instance '{instance.Name}' ({regions.Count} region(s)): {store.ConfigDir(instance.Name)}, {store.Dir(instance.Name)} and {store.LogDir(instance.Name)}");
                 if (globals.IsDryRun(parse))
                     return 0;
                 await env.Out.WriteLineAsync("Add --yes to delete it.");
@@ -269,6 +269,7 @@ internal static class InstanceCommands
         command.Add(RegionMove(env, globals));
         command.Add(RegionGet(env, globals));
         command.Add(RegionSet(env, globals));
+        command.Add(RegionDefaults(env, globals));
         return command;
     }
 
@@ -440,7 +441,7 @@ internal static class InstanceCommands
         var json = new Option<bool>("--json") { Description = "Print the settings as JSON" };
         var secrets = new Option<bool>("--show-secrets") { Description = "Show passwords instead of ********" };
         var command = new Command("get",
-            "Show a region's settings: [Region Defaults], the instance's other regions/*.ini, then its own section, later wins")
+            "Show a region's settings: the global and the instance's [Region Defaults], its other regions/*.ini, then the region's own, later wins")
         { region, keys, instanceOption, own, origin, json, secrets };
         CliApp.SetAction(command, env, async (parse, _) =>
         {
@@ -452,38 +453,48 @@ internal static class InstanceCommands
                 .Where(e => !parse.GetValue(own) || e.Origin?.File == regionsFile)
                 .ToList();
 
-            var patterns = parse.GetValue(keys) ?? [];
-            var missing = new List<string>();
-            if (patterns.Length > 0)
-            {
-                var matchers = patterns.Select(p => (Pattern: p, Regex: KeyPattern(p))).ToList();
-                missing.AddRange(matchers.Where(m => !entries.Any(e => m.Regex.IsMatch(e.Key))).Select(m => m.Pattern));
-                entries = entries.Where(e => matchers.Any(m => m.Regex.IsMatch(e.Key))).ToList();
-            }
-
-            string Value(Ini.IniEntry e) => parse.GetValue(secrets) ? e.Value : SecretMask.Mask(e.Key, e.Value);
-            if (parse.GetValue(json))
-            {
-                object shown = parse.GetValue(origin)
-                    ? entries.Select(e => new { e.Key, Value = Value(e), Origin = e.Origin?.ToString() })
-                    : entries.ToDictionary(e => e.Key, Value);
-                await env.Out.WriteLineAsync(JsonSerializer.Serialize(shown, CliApp.Json));
-            }
-            else
-            {
-                var width = entries.Count == 0 ? 0 : entries.Max(e => $"{e.Key} = {Value(e)}".Length);
-                foreach (var e in entries)
-                {
-                    var line = $"{e.Key} = {Value(e)}";
-                    await env.Out.WriteLineAsync(parse.GetValue(origin) && e.Origin is { } o ? $"{line.PadRight(width)}  ; {o}" : line);
-                }
-            }
-
-            foreach (var pattern in missing)
-                await env.Error.WriteLineAsync($"osctl: region '{found.Region.Name}' has no setting matching '{pattern}'");
-            return missing.Count == 0 ? 0 : CliApp.ExitFailure;
+            return await PrintSettingsAsync(env, parse, entries, parse.GetValue(keys) ?? [], parse.GetValue(origin), parse.GetValue(json),
+                parse.GetValue(secrets), $"region '{found.Region.Name}'");
         });
         return command;
+    }
+
+    /// <summary>
+    /// Prints settings as <c>Key = Value</c> lines (or JSON), only those matching <paramref name="patterns"/> when
+    /// there are any; exit code 1 if a pattern matches nothing.
+    /// </summary>
+    private static async Task<int> PrintSettingsAsync(CliEnvironment env, ParseResult parse, List<Ini.IniEntry> entries, string[] patterns,
+        bool origin, bool json, bool secrets, string what)
+    {
+        var missing = new List<string>();
+        if (patterns.Length > 0)
+        {
+            var matchers = patterns.Select(p => (Pattern: p, Regex: KeyPattern(p))).ToList();
+            missing.AddRange(matchers.Where(m => !entries.Any(e => m.Regex.IsMatch(e.Key))).Select(m => m.Pattern));
+            entries = entries.Where(e => matchers.Any(m => m.Regex.IsMatch(e.Key))).ToList();
+        }
+
+        string Value(Ini.IniEntry e) => secrets ? e.Value : SecretMask.Mask(e.Key, e.Value);
+        if (json)
+        {
+            object shown = origin
+                ? entries.Select(e => new { e.Key, Value = Value(e), Origin = e.Origin?.ToString() })
+                : entries.ToDictionary(e => e.Key, Value);
+            await env.Out.WriteLineAsync(JsonSerializer.Serialize(shown, CliApp.Json));
+        }
+        else
+        {
+            var width = entries.Count == 0 ? 0 : entries.Max(e => $"{e.Key} = {Value(e)}".Length);
+            foreach (var e in entries)
+            {
+                var line = $"{e.Key} = {Value(e)}";
+                await env.Out.WriteLineAsync(origin && e.Origin is { } o ? $"{line.PadRight(width)}  ; {o}" : line);
+            }
+        }
+
+        foreach (var pattern in missing)
+            await env.Error.WriteLineAsync($"osctl: {what} has no setting matching '{pattern}'");
+        return missing.Count == 0 ? 0 : CliApp.ExitFailure;
     }
 
     /// <summary>A setting name pattern: case-insensitive, with * and ? as wildcards.</summary>
@@ -502,15 +513,8 @@ internal static class InstanceCommands
             var (store, planner) = Planner(env, globals, parse);
             var found = Find(planner, parse.GetRequiredValue(region), parse.GetValue(instanceOption));
             var settings = found.Region.Settings.ToList();
-            foreach (var pair in parse.GetRequiredValue(values))
+            foreach (var (key, value) in RegionPairs(parse.GetRequiredValue(values)))
             {
-                var eq = pair.IndexOf('=');
-                if (eq <= 0)
-                    throw new OsctlException($"'{pair}': expected Key=Value");
-                var key = pair[..eq].Trim();
-                var value = pair[(eq + 1)..].Trim();
-                if (key is "RegionUUID" or "Location" or "InternalPort" or "SizeX" or "SizeY" || key.Contains(' '))
-                    throw new OsctlException($"{key}: use 'osctl region add/move/rename' for a region's UUID, location, port and size");
                 settings.RemoveAll(s => s.Key == key);
                 if (value.Length > 0)
                     settings.Add(KeyValuePair.Create(key, value));
@@ -524,6 +528,134 @@ internal static class InstanceCommands
             }
             store.SaveRegions(found.Instance, store.Regions(found.Instance).Select(x => x.Uuid == updated.Uuid ? updated : x));
             await env.Out.WriteLineAsync($"Region '{found.Region.Name}' updated.");
+            return 0;
+        });
+        return command;
+    }
+
+    /// <summary>Key=Value arguments (Key= to remove one), refusing what other commands manage.</summary>
+    internal static List<(string Key, string Value)> Pairs(IEnumerable<string> pairs)
+    {
+        var result = new List<(string, string)>();
+        foreach (var pair in pairs)
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0)
+                throw new OsctlException($"'{pair}': expected Key=Value");
+            var key = pair[..eq].Trim();
+            if (key.Length == 0 || key.Contains(' ') || key.Contains(';') || key.StartsWith('['))
+                throw new OsctlException($"'{key}' is not a setting name");
+            if (key.StartsWith("Include-", StringComparison.OrdinalIgnoreCase))
+                throw new OsctlException($"{key}: includes are not followed in overrides");
+            result.Add((key, pair[(eq + 1)..].Trim()));
+        }
+        return result;
+    }
+
+    private static List<(string Key, string Value)> RegionPairs(IEnumerable<string> pairs)
+    {
+        var result = Pairs(pairs);
+        foreach (var (key, _) in result)
+        {
+            if (key is "RegionUUID" or "Location" or "InternalPort" or "SizeX" or "SizeY")
+                throw new OsctlException($"{key}: use 'osctl region add/move/rename' for a region's UUID, location, port and size");
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------- osctl region defaults
+
+    private const string RegionDefaultsSection = "Region Defaults";
+
+    /// <summary>--instance A or --global: which [Region Defaults] (or overrides) a command works on.</summary>
+    internal static (Option<string?> Instance, Option<bool> Global) TargetOptions(string instanceText, string globalText) =>
+        (new Option<string?>("--instance") { Description = instanceText }, new Option<bool>("--global") { Description = globalText });
+
+    /// <summary>The instance named by --instance (which must exist), or null for --global; exactly one of them.</summary>
+    internal static string? Target(ParseResult parse, InstanceStore store, (Option<string?> Instance, Option<bool> Global) options)
+    {
+        var instance = parse.GetValue(options.Instance);
+        var global = parse.GetValue(options.Global);
+        if ((instance is null) == !global)
+            throw new OsctlException("Name the instance (--instance <name>) or add --global for every instance");
+        return instance is null ? null : store.Load(instance).Name;
+    }
+
+    private static Command RegionDefaults(CliEnvironment env, GlobalOptions globals)
+    {
+        var command = new Command("defaults",
+            "[Region Defaults]: settings every region starts with (--global, /etc/osctl/region-defaults.ini) or an instance's regions (--instance)");
+        command.Add(RegionDefaultsGet(env, globals));
+        command.Add(RegionDefaultsSet(env, globals));
+        return command;
+    }
+
+    private static Command RegionDefaultsGet(CliEnvironment env, GlobalOptions globals)
+    {
+        var keys = new Argument<string[]>("settings")
+        {
+            Description = "Only these settings (case-insensitive; * and ? match any text and one character)",
+            Arity = ArgumentArity.ZeroOrMore,
+        };
+        var target = TargetOptions("The instance's region defaults: the global ones with its own over them", "The global region defaults");
+        var own = new Option<bool>("--own") { Description = "With --instance: only the instance's own defaults, not the global ones" };
+        var origin = new Option<bool>("--origin") { Description = "Show the file (and line) each value comes from" };
+        var json = new Option<bool>("--json") { Description = "Print the settings as JSON" };
+        var secrets = new Option<bool>("--show-secrets") { Description = "Show passwords instead of ********" };
+        var command = new Command("get", "Show region defaults") { keys, target.Instance, target.Global, own, origin, json, secrets };
+        CliApp.SetAction(command, env, async (parse, _) =>
+        {
+            var paths = globals.Paths(parse);
+            var store = new InstanceStore(paths);
+            var instance = Target(parse, store, target);
+            var files = instance is null ? [paths.RegionDefaultsFile]
+                : parse.GetValue(own) ? [store.RegionDefaultsFile(instance)]
+                : new[] { paths.RegionDefaultsFile, store.RegionDefaultsFile(instance) };
+            var merged = new Ini.IniDocument();
+            foreach (var file in files.Where(File.Exists))
+                foreach (var e in Ini.IniParser.ParseFile(file)[RegionDefaultsSection]?.Entries ?? [])
+                    merged.Set(RegionDefaultsSection, e.Key, e.Value, e.Origin);
+            var entries = merged[RegionDefaultsSection]?.Entries.ToList() ?? [];
+            return await PrintSettingsAsync(env, parse, entries, parse.GetValue(keys) ?? [], parse.GetValue(origin), parse.GetValue(json),
+                parse.GetValue(secrets), instance is null ? "the global region defaults" : $"instance '{instance}''s region defaults");
+        });
+        return command;
+    }
+
+    private static Command RegionDefaultsSet(CliEnvironment env, GlobalOptions globals)
+    {
+        var values = new Argument<string[]>("settings") { Description = "Key=Value settings (Key= removes one)", Arity = ArgumentArity.OneOrMore };
+        var target = TargetOptions("For this instance's regions", "For every region (/etc/osctl/region-defaults.ini)");
+        var command = new Command("set", "Set region defaults, e.g. MaxAgents=40; a region's own settings ('osctl region set') still win")
+        { values, target.Instance, target.Global };
+        CliApp.SetAction(command, env, async (parse, _) =>
+        {
+            var paths = globals.Paths(parse);
+            var store = new InstanceStore(paths);
+            var instance = Target(parse, store, target);
+            var pairs = RegionPairs(parse.GetRequiredValue(values));
+            foreach (var (key, value) in pairs)
+                Ini.IniWriter.FormatValue(RegionDefaultsSection, new Ini.IniEntry(key, value, null));   // refuses what an ini file cannot hold
+            var file = instance is null ? paths.RegionDefaultsFile : store.RegionDefaultsFile(instance);
+            var what = instance is null ? "every region" : $"instance '{instance}''s regions";
+            if (globals.IsDryRun(parse))
+            {
+                await env.Out.WriteLineAsync($"would set {string.Join(", ", pairs.Select(p => $"{p.Key}={p.Value}"))} in {file} for {what}");
+                return 0;
+            }
+            if (!File.Exists(file))
+                File.WriteAllText(file, instance is null
+                    ? $"; Settings every region starts with. Change them with 'osctl region defaults set --global Key=Value' or by hand.\n\n[{RegionDefaultsSection}]\n"
+                    : $"; Settings instance '{instance}''s regions start with, over /etc/osctl/region-defaults.ini; a region's own settings win.\n" +
+                      $"; Change them with 'osctl region defaults set --instance {instance} Key=Value' or by hand.\n\n[{RegionDefaultsSection}]\n");
+            foreach (var (key, value) in pairs)
+            {
+                if (value.Length == 0)
+                    Ini.IniFileEditor.RemoveValue(file, RegionDefaultsSection, key);
+                else
+                    Ini.IniFileEditor.SetValue(file, RegionDefaultsSection, key, value);
+            }
+            await env.Out.WriteLineAsync($"Region defaults for {what} updated ({file}); they take effect at the next start.");
             return 0;
         });
         return command;

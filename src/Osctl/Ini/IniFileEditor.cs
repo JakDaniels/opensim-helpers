@@ -55,6 +55,33 @@ public static partial class IniFileEditor
         Save(path, lines);
     }
 
+    /// <summary>Removes a key from a section (every line that sets it). Returns whether there was one.</summary>
+    public static bool RemoveValue(string path, string section, string key)
+    {
+        if (!File.Exists(path))
+            return false;
+        var lines = File.ReadAllLines(path).ToList();
+        var inSection = false;
+        var removed = false;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var header = SectionHeader().Match(lines[i]);
+            if (header.Success)
+            {
+                inSection = header.Groups[1].Value.TrimEnd() == section;
+                continue;
+            }
+            if (inSection && KeyLine().Match(lines[i]) is { Success: true } assignment && assignment.Groups[2].Value.TrimEnd() == key)
+            {
+                lines.RemoveAt(i--);
+                removed = true;
+            }
+        }
+        if (removed)
+            Save(path, lines);
+        return removed;
+    }
+
     private static void Save(string path, List<string> lines)
     {
         // Keep the file's mode (secrets.ini is 0640): write over it rather than replacing it.

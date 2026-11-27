@@ -17,6 +17,62 @@ internal static class ConfigCommands
         command.Add(Explain(env, globals));
         command.Add(Diff(env, globals));
         command.Add(Generate(env, globals));
+        command.Add(Set(env, globals));
+        return command;
+    }
+
+    /// <summary>The override file 'osctl config set' writes, in the instance's or the global overrides directory.</summary>
+    public const string SetFile = "50-osctl.ini";
+
+    private static Command Set(CliEnvironment env, GlobalOptions globals)
+    {
+        var section = new Argument<string>("section") { Description = "The section, e.g. Startup" };
+        var values = new Argument<string[]>("settings") { Description = "Key=Value settings (Key= removes one)", Arity = ArgumentArity.OneOrMore };
+        var target = InstanceCommands.TargetOptions("For this instance (its overrides/)", "For every instance (/etc/osctl/overrides)");
+        var command = new Command("set",
+            $"Override OpenSim settings, e.g. 'config set Startup MaxPoolThreads=200 --instance A' (written to {SetFile}; takes effect at the next start)")
+        { section, values, target.Instance, target.Global };
+        CliApp.SetAction(command, env, async (parse, _) =>
+        {
+            var paths = globals.Paths(parse);
+            var store = new InstanceStore(paths);
+            var instance = InstanceCommands.Target(parse, store, target);
+            var name = parse.GetRequiredValue(section).Trim();
+            if (name.Length == 0 || name.Contains('[') || name.Contains(']'))
+                throw new OsctlException($"'{name}' is not a section name");
+            var pairs = InstanceCommands.Pairs(parse.GetRequiredValue(values));
+            foreach (var (key, value) in pairs)
+                IniWriter.FormatValue(name, new IniEntry(key, value, null));   // refuses what an ini file cannot hold
+            var dir = instance is null ? paths.GlobalOverridesDir : store.OverridesDir(instance);
+            var file = Path.Combine(dir, SetFile);
+            if (globals.IsDryRun(parse))
+            {
+                await env.Out.WriteLineAsync($"would set [{name}] {string.Join(", ", pairs.Select(p => $"{p.Key}={p.Value}"))} in {file}");
+                return 0;
+            }
+            Directory.CreateDirectory(dir);
+            if (!File.Exists(file))
+                File.WriteAllText(file,
+                    "; Written by 'osctl config set' (Key= removes a setting); you may edit it too. Override files are read in\n" +
+                    "; alphabetical order and later ones win, so a file named after this one overrides what is here.\n");
+            foreach (var (key, value) in pairs)
+            {
+                if (value.Length == 0)
+                    IniFileEditor.RemoveValue(file, name, key);
+                else
+                    IniFileEditor.SetValue(file, name, key, value);
+            }
+            await env.Out.WriteLineAsync($"[{name}] updated in {file}; it takes effect at the next start.");
+
+            // A later file in the same directory that sets the same key wins over this one.
+            foreach (var later in Directory.GetFiles(dir, "*.ini").Where(f => StringComparer.Ordinal.Compare(Path.GetFileName(f), SetFile) > 0).Order(StringComparer.Ordinal))
+            {
+                var doc = IniParser.ParseFile(later);
+                foreach (var (key, _) in pairs.Where(p => doc.Get(name, p.Key) is not null))
+                    await env.Error.WriteLineAsync($"osctl: warning: {later} also sets [{name}] {key}, and wins");
+            }
+            return 0;
+        });
         return command;
     }
 

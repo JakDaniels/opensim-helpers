@@ -5,6 +5,12 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: each instance's definition (instance.ini, secrets, regions, overrides, start-up and shutdown commands)
+  is now in `/etc/osctl/instances/<name>/`, so all configuration is under `/etc/osctl`; existing instances are
+  moved there by the first osctl command once they are stopped. `/var/lib/osctl` keeps their data and backups.
+- osctl: `osctl region defaults set|get` (`--global` or `--instance`) for region defaults, now also per instance,
+  and `osctl config set <section> Key=Value --global|--instance` for OpenSim.ini overrides, so neither needs
+  files edited by hand.
 - osctl: `osctl backup restore` puts a backup back: the databases, a grid's asset files, osctl's own definition
   (to make a lost instance again), or one region's OAR or a user's IAR. It shows a plan until `--yes`, and
   backs the instance up as it is now first. Backups now also hold the instance's definition (not its secrets).

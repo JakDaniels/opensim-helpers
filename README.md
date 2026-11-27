@@ -247,7 +247,7 @@ layers, in order; a later layer wins for any key it sets:
 1. **The config set:** the base files from the build's `bin/`, or downloaded (such as OSGrid's), loaded as OpenSim
    itself loads them, includes and all.
 2. **Global overrides:** `/etc/osctl/overrides/*.ini`, in alphabetical order, for every instance.
-3. **Instance overrides:** `/var/lib/osctl/instances/<instance>/overrides/*.ini`, in alphabetical order.
+3. **Instance overrides:** `/etc/osctl/instances/<instance>/overrides/*.ini`, in alphabetical order.
 4. **What osctl sets itself:** ports, file paths (logs, caches, script engine, databases), the database
    connection, the estate defaults and RemoteAdmin. These can't be overridden, because osctl relies on them.
 
@@ -260,6 +260,15 @@ An override file holds only the settings you want to change, under their section
 
 [Permissions]
     allow_grid_gods = true
+```
+
+Or let osctl write it: `osctl config set <Section> Key=Value … --instance Test1` (or `--global` for every instance)
+keeps the settings in `50-osctl.ini` in that overrides directory; `Key=` with nothing after it removes one. Files
+named after `50-osctl.ini` (such as `90-mine.ini`) are read later and win; osctl warns when one sets the same key.
+
+```
+osctl config set Startup physics=ubODE MaxPoolThreads=200 --instance Test1
+osctl config set Permissions allow_grid_gods=true --global
 ```
 
 To see the result, and where each value comes from:
@@ -283,21 +292,27 @@ start (`osctl restart Test1`).
 
 Each region's settings are built in this order, a later one winning:
 
-1. `[Region Defaults]` in `/etc/osctl/region-defaults.ini`, for every region. The shipped values are MIOS's:
-   `MaxPrims = 15000`, `MaxAgents = 100`, `ExternalHostName = SYSTEMIP` and a few more.
-2. Other `.ini` files in the instance's `regions/` directory, under a `[Region Name]` section (for example, an
+1. **Global region defaults:** `[Region Defaults]` in `/etc/osctl/region-defaults.ini`, for every region. The
+   shipped values are MIOS's: `MaxPrims = 15000`, `MaxAgents = 100`, `ExternalHostName = SYSTEMIP` and a few more.
+   `osctl region defaults set MaxPrims=20000 --global` changes one.
+2. **Instance region defaults:** `[Region Defaults]` in `/etc/osctl/instances/<instance>/region-defaults.ini`, for
+   that instance's regions: `osctl region defaults set MaxAgents=40 --instance Test1`.
+3. Other `.ini` files in the instance's `regions/` directory, under a `[Region Name]` section (for example, an
    addon module's per-region settings).
-3. The region's own settings: `osctl region set Welcome MaxAgents=40 RegionType=Estate`. `Key=` with nothing
-   after it removes one.
+4. The region's own settings: `osctl region set Welcome MaxAgents=40 RegionType=Estate`.
+
+In each of these commands `Key=` with nothing after it removes a setting. `osctl region defaults get --global` or
+`--instance Test1` shows the defaults (for an instance: the global ones with its own over them; `--own` for its
+own only), with the same `--origin` and `--json` as `region get` below.
 
 `ExternalHostName = SYSTEMIP` makes OpenSim use this machine's IP address. For regions people reach over the
-internet, set it to your public DNS name, either for all regions in `region-defaults.ini` or for one region with
+internet, set it to your public DNS name, either for all regions in the region defaults or for one region with
 `osctl region set Welcome ExternalHostName=sim.example.org`.
 
 `osctl region get Welcome` shows a region's settings after these steps are applied, as `Key = Value`
 lines. Name settings to see only those, e.g. `osctl region get Welcome MaxAgents 'Max*'`; names ignore case, and
 `*` and `?` are wildcards. A name that matches nothing gives exit code 1. `--own` shows only the region's own settings
-(step 3), `--origin` adds the file and line each value comes from, and `--json` prints JSON. Passwords are shown as
+(step 4), `--origin` adds the file and line each value comes from, and `--json` prints JSON. Passwords are shown as
 `********` unless `--show-secrets`.
 
 ### Config sets
@@ -462,8 +477,8 @@ osctl start Sim1
   simulators, `osctl stop` stops them after, and `osctl enable Sim1` also makes the grid start at boot. A
   simulator waits for its grid to be ready.
 - **Changes:** `osctl grid set` changes the host, names and ports; restart the grid and its simulators. Robust's
-  other settings are overridden like any instance's (`/var/lib/osctl/instances/MyGrid/overrides/*.ini`, for
-  example `[GridInfoService] welcome`).
+  other settings are overridden like any instance's (`osctl config set GridInfoService welcome=… --instance MyGrid`,
+  or files in `/etc/osctl/instances/MyGrid/overrides/`).
 - **Removing:** `osctl instance delete MyGrid --yes` once its simulators are deleted; its config set goes too.
 
 **Ports.** Most grids use plain HTTP, and Hypergrid addresses are usually `http://host:8002`. Open to the internet
@@ -538,8 +553,8 @@ osctl visitors --csv > visitors.csv         also --json
 - **IARs** (inventories) of the users listed in `instance.ini` `[Backups] Iar`, or given with `--iar "First Last"`;
 - **for a grid:** its databases, then its asset files in `fsassets/` (FSAssets' `data/`, and in `spool/` any assets
   not yet written out), running or not;
-- `definition/`: osctl's own definition of the instance (`instance.ini`, its regions, overrides, start-up and
-  shutdown commands, and the config sets it uses), so a lost instance can be made again. Not `secrets.ini`;
+- `definition/`: osctl's own definition of the instance (what is in `/etc/osctl/instances/<instance>/`: `instance.ini`,
+  its regions, region defaults, overrides, start-up and shutdown commands; and the config sets it uses), so a lost instance can be made again. Not `secrets.ini`;
 - `backup.ini`, which lists every file and whether it was saved.
 
 **A grid's asset files** never change once written, and each is named after its content's SHA-256. So each backup
@@ -648,7 +663,8 @@ timers.
 | `/etc/osctl/region-defaults.ini` | Settings every region starts with. |
 | `/etc/osctl/builds/<build>.ini` | Build definitions (also written by `osctl build add`). |
 | `/var/lib/osctl/builds/<build>/` | The source clone, addons, releases, `current` (the release in use), build logs. |
-| `/var/lib/osctl/instances/<instance>/` | `instance.ini`, `secrets.ini`, `overrides/`, `regions/`, `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), `backups/`, script state. |
+| `/etc/osctl/instances/<instance>/` | The instance's definition: `instance.ini`, `secrets.ini`, `overrides/`, `region-defaults.ini`, `regions/`, start-up and shutdown commands. |
+| `/var/lib/osctl/instances/<instance>/` | What it makes: `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), `backups/`, script state. |
 | `/etc/systemd/system/osctl-*@<instance>.timer` | The instances' scheduled restarts and backups (written by `osctl schedule` or `sudo osctl units install`). |
 | `/var/log/osctl/<instance>/` | `OpenSim.log`, `console.log`, console history, crash reports. |
 | `/var/cache/osctl/assets/<grid>/` | The asset cache, one per grid. |
@@ -658,6 +674,9 @@ timers.
 
 - **Upgrading:** `sudo apt upgrade`, or `sudo apt install ./osctl_<new version>_amd64.deb`. Your settings, builds
   and instances are kept. Running instances carry on and use the new osctl from their next start.
+  Instances made by osctl 0.3 or earlier kept their definition in `/var/lib/osctl/instances/<instance>/`; the first
+  osctl command after the upgrade moves it to `/etc/osctl/instances/<instance>/` (a running instance once it has
+  stopped) and says so.
 - **Removing:** `sudo apt remove osctl` stops the instances and removes the program. Settings, builds, instances and
   logs stay, so a reinstall carries on where it left off.
 - **Purging:** `sudo apt purge osctl` removes `/etc/osctl`, `/var/lib/osctl`, `/var/cache/osctl` and

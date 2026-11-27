@@ -29,8 +29,8 @@ public sealed record GeneratedConfig(
 /// Makes an instance's OpenSim configuration (PLAN.md "Configuration generation"), in this order, later wins:
 /// the config set's files with their includes (loaded as OpenSim loads them, from the build's current bin/),
 /// /etc/osctl/overrides/*.ini, the instance's overrides/*.ini, then the settings osctl sets itself ("osctl" layer).
-/// <c>Include-*</c> keys are removed from the result (they have been followed). Regions: region-defaults.ini,
-/// then the instance's other regions/*.ini (per-region module settings), then regions/Regions.ini.
+/// <c>Include-*</c> keys are removed from the result (they have been followed). Regions: /etc/osctl/region-defaults.ini,
+/// the instance's region-defaults.ini, its other regions/*.ini (per-region module settings), then regions/Regions.ini.
 /// </summary>
 public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings settings)
 {
@@ -382,9 +382,12 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
 
     private IniDocument RegionsConfig(string name, List<RegionDefinition> regions)
     {
-        var defaults = File.Exists(paths.RegionDefaultsFile)
-            ? IniParser.ParseFile(paths.RegionDefaultsFile)["Region Defaults"]
-            : null;
+        var defaults = new[] { paths.RegionDefaultsFile, instances.RegionDefaultsFile(name) }
+            .Where(File.Exists)
+            .Select(f => IniParser.ParseFile(f)["Region Defaults"])
+            .OfType<IniSection>()
+            .SelectMany(d => d.Entries)
+            .ToList();
         var modules = new IniDocument();
         foreach (var file in IniFiles(instances.RegionsDir(name)).Where(f => Path.GetFileName(f) != "Regions.ini"))
             modules.Merge(IniParser.ParseFile(file));
@@ -395,7 +398,7 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         var doc = new IniDocument();
         foreach (var region in regions)
         {
-            foreach (var entry in defaults?.Entries ?? [])
+            foreach (var entry in defaults)
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);
             foreach (var entry in modules[region.Name]?.Entries ?? [])
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);

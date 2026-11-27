@@ -105,7 +105,7 @@ public sealed class RestoreRunner(
             CheckDefinition(name, backup, instance);
             steps.Add(new RestoreStep("definition", creates
                 ? $"make the instance again from the backup's definition (build {instance.Build}, config set {instance.ConfigSet})"
-                : "replace instance.ini, the regions, overrides and start-up/shutdown commands with the backup's", DefinitionCopy.Dir));
+                : "replace instance.ini, the regions, region defaults, overrides and start-up/shutdown commands with the backup's", DefinitionCopy.Dir));
         }
         if (parts.Databases)
             steps.AddRange(DatabaseSteps(name, instance, backup, parts.WithEstates));

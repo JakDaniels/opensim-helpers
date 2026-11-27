@@ -100,7 +100,24 @@ public static class CliApp
     {
         var root = Build(env);
         var config = new InvocationConfiguration { Output = env.Out, Error = env.Error };
-        return root.Parse(args).InvokeAsync(config, cancellationToken);
+        var parse = root.Parse(args);
+        if (parse.Errors.Count == 0 && !parse.GetValue<bool>("--dry-run"))
+            MoveOldInstances(OsctlPaths.Resolve(parse.GetValue<string?>("--root")), env);
+        return parse.InvokeAsync(config, cancellationToken);
+    }
+
+    /// <summary>Instances in the layout of earlier versions get their definition moved to /etc/osctl/instances.</summary>
+    private static void MoveOldInstances(OsctlPaths paths, CliEnvironment env)
+    {
+        try
+        {
+            foreach (var line in InstanceLayout.Migrate(paths))
+                env.Error.WriteLine($"osctl: {line}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            env.Error.WriteLine($"osctl: could not move instances to {paths.InstanceConfigsDir}: {e.Message}");
+        }
     }
 
     internal static RootCommand Build(CliEnvironment env)
