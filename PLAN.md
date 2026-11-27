@@ -110,6 +110,7 @@ osctl logs <name> [-f]
 osctl config show <name> [--section S…] | explain <name> <Section> <Key> | diff <name>
 osctl config set <Section> Key=Value… --global|--instance I ; osctl region defaults get|set … --global|--instance I
 osctl config tree [<name>]           /etc/osctl as a tree with notes; for an instance its files in read order
+osctl grid start|stop|restart <grid> [--warn 10m]   the grid and its simulators in order; restart: running ones only
 osctl help [<command>…] [--tree [--options]]   help, or the command tree (built from the commands themselves)
 osctl visitors [<name>…] [--since DATE|7d] [--csv|--json]
 osctl backup create [<name>…] [--oar] [--db] [--iar USER]… [--scheduled] ; osctl backup list|prune|iar-password

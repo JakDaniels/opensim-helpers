@@ -26,6 +26,57 @@ internal static class GridCommands
         command.Add(GridList(env, globals));
         command.Add(Show(env, globals));
         command.Add(Set(env, globals));
+        foreach (var verb in new[] { "start", "stop", "restart" })
+            command.Add(Lifecycle(env, globals, verb));
+        return command;
+    }
+
+    /// <summary>
+    /// <c>grid start|stop|restart</c>: the grid's Robust instance and its simulators together, in order. A restart
+    /// stops the running simulators, then the grid, and starts them again grid first; stopped simulators stay stopped.
+    /// </summary>
+    private static Command Lifecycle(CliEnvironment env, GlobalOptions globals, string verb)
+    {
+        var name = GridName();
+        var (force, warn, _) = RunCommands.LifecycleOptions();
+        var description = verb switch
+        {
+            "start" => "Start a grid and all its simulators (the grid first), and wait until they are ready",
+            "stop" => "Stop a grid and all its simulators (the simulators first)",
+            _ => "Restart a grid and its running simulators: they stop, then the grid; then the grid starts, then they do",
+        };
+        var command = new Command(verb, description) { name };
+        RunCommands.AddLifecycleOptions(command, verb, force, warn, scheduled: null);
+        CliApp.SetAction(command, env, async (parse, ct) =>
+        {
+            var store = new InstanceStore(globals.Paths(parse));
+            var grid = store.Load(parse.GetRequiredValue(name));
+            if (!grid.IsRobust)
+                throw new OsctlException($"'{grid.Name}' is not a grid; 'osctl {verb} {grid.Name}' {verb}s an instance");
+            var simulators = GridsOf(env, globals, parse).Simulators(grid.Name).Select(i => i.Name).ToList();
+            var warning = parse.GetValue(warn) is { } text ? Operations.Durations.Parse(text) : (TimeSpan?)null;
+            if (verb != "restart")
+            {
+                return await RunCommands.LifecycleAsync(env, globals, parse,
+                    new RunCommands.LifecycleRequest(verb, [grid.Name, .. simulators], parse.GetValue(force), warning), ct);
+            }
+
+            var supervisor = RunCommands.Supervisor(env, globals, parse);
+            var running = new List<string>();
+            foreach (var sim in simulators)
+            {
+                if ((await supervisor.StatusAsync(sim, ct)).State == InstanceState.Running)
+                    running.Add(sim);
+            }
+            var stopped = await RunCommands.LifecycleAsync(env, globals, parse,
+                new RunCommands.LifecycleRequest("stop", [grid.Name, .. running], Warning: warning, WarnVerb: "restart"), ct);
+            if (stopped != 0)
+            {
+                await env.Error.WriteLineAsync($"osctl: grid '{grid.Name}' did not stop cleanly, so it is not started again");
+                return stopped;
+            }
+            return await RunCommands.LifecycleAsync(env, globals, parse, new RunCommands.LifecycleRequest("start", [grid.Name, .. running]), ct);
+        });
         return command;
     }
 
