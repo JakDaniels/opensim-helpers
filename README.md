@@ -329,9 +329,11 @@ In each of these commands `Key=` with nothing after it removes a setting. `osctl
 `--instance Test1` shows the defaults (for an instance: the global ones with its own over them; `--own` for its
 own only), with the same `--origin` and `--json` as `region get` below.
 
-`ExternalHostName = SYSTEMIP` makes OpenSim use this machine's IP address. For regions people reach over the
-internet, set it to your public DNS name, either for all regions in the region defaults or for one region with
-`osctl region set Welcome ExternalHostName=sim.example.org`.
+`ExternalHostName = SYSTEMIP` makes OpenSim use this machine's own IP address, often a private one. For regions
+people reach over the internet, set it to your public DNS name, either for all regions in the region defaults or
+for one region with `osctl region set Welcome ExternalHostName=sim.example.org`. A simulator on one of osctl's own
+grids does not need this: while its regions still have the shipped `SYSTEMIP`, they use the grid's `--host`
+(Hypergrid visitors are sent to that address). Set `ExternalHostName` for the instance or the region to use another.
 
 `osctl region get Welcome` shows a region's settings after these steps are applied, as `Key = Value`
 lines. Name settings to see only those, e.g. `osctl region get Welcome MaxAgents 'Max*'`; names ignore case, and

@@ -398,6 +398,7 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         // Read from the file itself (the regions were loaded from it) so that each value keeps its line.
         var regionsFile = instances.RegionsFile(name);
         var own = File.Exists(regionsFile) ? IniParser.ParseFile(regionsFile) : RegionDefinition.ToIni(regions);
+        var gridHost = regions.Count == 0 ? null : GridHost(name);
 
         var doc = new IniDocument();
         foreach (var region in regions)
@@ -408,10 +409,30 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);
             foreach (var entry in own[region.Name]!.Entries)
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);
+            if (gridHost is { } host && doc[region.Name]!.GetEntry(ExternalHostName) is var external
+                && (external is null || (external.Value == "SYSTEMIP" && external.Origin?.File == paths.RegionDefaultsFile)))
+                doc.Set(region.Name, ExternalHostName, host.Value, host.Origin);
         }
         foreach (var unknown in modules.Sections.Where(s => regions.All(r => r.Name != s.Name)))
             throw new OsctlException($"{instances.RegionsDir(name)}: settings for '{unknown.Name}', which is not a region of instance '{name}'");
         return doc;
+    }
+
+    private const string ExternalHostName = "ExternalHostName";
+
+    /// <summary>
+    /// For a simulator on one of osctl's own grids, the grid's host (its [Grid] Host entry, so that the origin is
+    /// that line). The simulator runs on the grid's machine, so its regions are reached at the same host; with the
+    /// shipped ExternalHostName = SYSTEMIP they would give out this machine's own (often private) address, which
+    /// Hypergrid visitors and viewers outside its network cannot reach.
+    /// </summary>
+    private IniEntry? GridHost(string name)
+    {
+        var instance = instances.Load(name);
+        if (instance.IsRobust || !configSets.Exists(instance.ConfigSet) || LocalGrid(configSets.Load(instance.ConfigSet)) is not { } grid)
+            return null;
+        var file = instances.DefinitionFile(grid.Robust.Name);
+        return IniParser.ParseFile(file)["Grid"]?.GetEntry("Host") ?? new IniEntry("Host", grid.Grid.Host, new IniOrigin(file, 0));
     }
 
     /// <summary>

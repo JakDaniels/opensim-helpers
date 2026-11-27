@@ -123,6 +123,34 @@ public class GridTests
     }
 
     [Fact]
+    public async Task ASimulatorsRegionsAreReachedAtTheGridsHostUnlessTheySayOtherwise()
+    {
+        using var f = await WithGrid();
+        await f.Ok("instance", "add", "Sim1", "--configset", "MyGrid", "--estate-owner", "Grid Owner");
+        await f.Ok("region", "add", "Welcome", "--instance", "Sim1", "--location", "1000,1000");
+        await f.Ok("region", "add", "Second", "--instance", "Sim1", "--location", "1002,1000");
+
+        // Not the shipped SYSTEMIP, which would give out this machine's own (often private) address.
+        Assert.Equal("grid.example.org", f.Generator().Generate("Sim1").Regions["Welcome"]!["ExternalHostName"]);
+        Assert.Matches(@"ExternalHostName = grid\.example\.org +; .*instances/MyGrid/instance\.ini:\d+",
+            await f.Ok("region", "get", "Welcome", "ExternalHostName", "--origin"));
+        await f.Ok("grid", "set", "MyGrid", "--host", "new.example.org");
+        Assert.Equal("new.example.org", f.Generator().Generate("Sim1").Regions["Second"]!["ExternalHostName"]);
+
+        // A value set for the region or the instance stays, SYSTEMIP too.
+        await f.Ok("region", "set", "Welcome", "ExternalHostName=sim.example.org");
+        await f.Ok("region", "defaults", "set", "ExternalHostName=SYSTEMIP", "--instance", "Sim1");
+        var regions = f.Generator().Generate("Sim1").Regions;
+        Assert.Equal("sim.example.org", regions["Welcome"]!["ExternalHostName"]);
+        Assert.Equal("SYSTEMIP", regions["Second"]!["ExternalHostName"]);
+
+        // A standalone keeps the shipped default.
+        await f.Ok("instance", "add", "Alone", "--db", "sqlite", "--estate-owner", "Test User");
+        await f.Ok("region", "add", "Home", "--instance", "Alone", "--location", "2000,2000");
+        Assert.Equal("SYSTEMIP", f.Generator().Generate("Alone").Regions["Home"]!["ExternalHostName"]);
+    }
+
+    [Fact]
     public async Task GridsAndRegionsDoNotShareCommandsOrPorts()
     {
         using var f = await WithGrid();
