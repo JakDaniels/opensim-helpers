@@ -5,6 +5,10 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: regions of a simulator on one of osctl's own grids are now reached at the grid's host instead of the
+  shipped `ExternalHostName = SYSTEMIP`, which gave out the machine's own, often private, address, so Hypergrid
+  visitors were sent somewhere they could not reach. A region's or instance's own `ExternalHostName` still wins.
+
 ## 0.4.2 (2026-11-27)
 
 - osctl: NPCs work again. The generated OpenSim.ini dropped sections with nothing set in them, and OpenSim

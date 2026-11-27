@@ -218,7 +218,9 @@ For each start (and for `osctl config show`), in order, later wins:
 includes. Other empty sections stay, as in OpenSim: `[NPC]`'s module is off when its section is missing.
 Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `/etc/osctl/region-defaults.ini`,
 then from the instance's `region-defaults.ini`, then the instance's other `regions/*.ini` (per-region module settings,
-by region name), then `regions/Regions.ini`;
+by region name), then `regions/Regions.ini`; on osctl's own grid a region whose `ExternalHostName` is still the
+shipped `SYSTEMIP` (from the global defaults) gets the grid's `Host` (origin: that line of the grid's instance.ini),
+since its simulator runs on the grid's machine and SYSTEMIP is often a private address Hypergrid visitors cannot reach;
 written to `generated/Regions/Regions.ini`. `osctl config show|explain|diff|generate` work on this; passwords are
 shown as `********` unless `--show-secrets`.
 
