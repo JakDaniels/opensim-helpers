@@ -20,23 +20,55 @@ public sealed class ConfigTree(OsctlPaths paths, OsctlSettings settings)
 
     // ---------------------------------------------------------------- /etc/osctl
 
-    /// <summary>The files under /etc/osctl (dot files left out), and the instances not yet moved there.</summary>
-    public TreeNode Files()
+    /// <summary>
+    /// The files under /etc/osctl that osctl reads (all of them with <paramref name="all"/>; dot files never), and
+    /// the instances whose definition is not yet moved there. Other files are counted on a last line.
+    /// </summary>
+    public TreeNode Files(bool all = false)
     {
         var root = new TreeNode(paths.Etc);
-        AddDirectory(root, paths.Etc, "");
+        var localSources = LocalSources();
+        var hidden = 0;
+        AddDirectory(root, paths.Etc, "", all, localSources, ref hidden);
         var old = instances.Names().Where(instances.IsOldLayout).ToList();
         if (old.Count > 0)
         {
+            // Only the definition: the rest of that directory is the instance's data, as for a moved one.
             var node = root.Add(paths.InstancesDir + "/", "instances whose definition is still here (moved once they are stopped)");
             foreach (var name in old)
-                AddDirectory(node.Add(name + "/", InstanceNote(name)), instances.ConfigDir(name), $"instances/{name}/");
+            {
+                var hiddenThere = 0;
+                AddDirectory(node.Add(name + "/", InstanceNote(name)), instances.ConfigDir(name), $"instances/{name}/", false, localSources, ref hiddenThere);
+            }
         }
+        if (hidden > 0)
+            root.Add($"({hidden} other file{(hidden == 1 ? "" : "s")} osctl does not read: 'osctl config tree --all' shows them)");
         return root;
     }
 
-    private void AddDirectory(TreeNode node, string dir, string relative)
+    /// <summary>Files under /etc/osctl that a config set takes in place of one from bin/ ([Files] path = local file).</summary>
+    private HashSet<string> LocalSources()
     {
+        var sources = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in configSets.Names())
+        {
+            try
+            {
+                foreach (var file in configSets.Load(name).Files.Where(f => f.Kind == FileSourceKind.Local))
+                    sources.Add(Path.GetFullPath(Path.IsPathRooted(file.Source) ? file.Source : Path.Combine(paths.ConfigSetsDir, file.Source)));
+            }
+            catch (Exception e) when (CliExpected(e))
+            {
+                // Shown as unreadable on its own line.
+            }
+        }
+        return sources;
+    }
+
+    /// <summary>Adds a directory's entries; returns whether it added any file (so empty branches can be left out).</summary>
+    private bool AddDirectory(TreeNode node, string dir, string relative, bool all, HashSet<string> localSources, ref int hidden)
+    {
+        var any = false;
         var entries = new DirectoryInfo(dir).EnumerateFileSystemInfos()
             .Where(e => !e.Name.StartsWith('.'))
             .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase);
@@ -44,10 +76,46 @@ public sealed class ConfigTree(OsctlPaths paths, OsctlSettings settings)
         {
             var path = relative + entry.Name;
             if (entry is DirectoryInfo sub)
-                AddDirectory(node.Add(entry.Name + "/", Note(path + "/")), sub.FullName, path + "/");
+            {
+                var child = new TreeNode(entry.Name + "/", Note(path + "/"));
+                if (AddDirectory(child, sub.FullName, path + "/", all, localSources, ref hidden) || all || IsOsctlDirectory(path))
+                {
+                    node.Add(child);
+                    any = true;
+                }
+            }
+            else if (all || IsRead(path) || localSources.Contains(Path.GetFullPath(entry.FullName)))
+            {
+                node.Add(entry.Name, Note(path) ?? (localSources.Contains(Path.GetFullPath(entry.FullName)) ? "read by a config set ([Files])" : null));
+                any = true;
+            }
             else
-                node.Add(entry.Name, Note(path));
+                hidden++;
         }
+        return any;
+    }
+
+    /// <summary>Directories osctl keeps, shown even when empty.</summary>
+    private static bool IsOsctlDirectory(string path) => path.Split('/') switch
+    {
+        ["configsets" or "overrides" or "builds" or "instances"] => true,
+        ["instances", _] => true,
+        ["instances", _, "overrides" or "regions"] => true,
+        _ => false,
+    };
+
+    /// <summary>Whether osctl reads this file (relative to /etc/osctl) when it makes an instance's configuration.</summary>
+    private static bool IsRead(string path)
+    {
+        static bool Ini(string name) => name.EndsWith(".ini", StringComparison.Ordinal);
+        return path.Split('/') switch
+        {
+            ["osctl.ini" or "secrets.ini" or "region-defaults.ini"] => true,
+            ["configsets" or "overrides" or "builds", var file] => Ini(file),
+            ["instances", _, "instance.ini" or "secrets.ini" or "region-defaults.ini" or "startup_commands.txt" or "shutdown_commands.txt"] => true,
+            ["instances", _, "overrides" or "regions", var file] => Ini(file),
+            _ => false,
+        };
     }
 
     /// <summary>What a file or directory under /etc/osctl is, from its path relative to it.</summary>

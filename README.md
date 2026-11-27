@@ -277,7 +277,7 @@ To see the result, and where each value comes from:
 osctl config show Test1 --section Startup Network   # the configuration it would start with now
 osctl config explain Test1 Startup physics          # every file that set it, in order, and the final value
 osctl config diff Test1                             # what changed since its last start
-osctl config tree                                   # every file under /etc/osctl, with what each one is
+osctl config tree                                   # the files under /etc/osctl osctl reads, with what each is (--all: every file)
 osctl config tree Test1                             # the files Test1's configuration is made from, in order
 ```
 
@@ -499,7 +499,10 @@ osctl start Sim1
   `osctl grid set MyGrid --default-region <region>` chooses another; restart the grid afterwards.
 - **Starting and stopping:** starting a simulator starts its grid first, `osctl start` starts grids before
   simulators, `osctl stop` stops them after, and `osctl enable Sim1` also makes the grid start at boot. A
-  simulator waits for its grid to be ready.
+  simulator waits for its grid to be ready. To work on the whole grid at once: `osctl grid start|stop MyGrid` starts
+  or stops the grid and all its simulators, and `osctl grid restart MyGrid` stops its running simulators and then
+  the grid, and starts them again grid first (stopped simulators stay stopped). `--warn 10m` on `grid stop` and
+  `grid restart` warns the people in the simulators' regions first, as for `osctl stop`.
 - **Changes:** `osctl grid set` changes the host, names and ports; restart the grid and its simulators. Robust's
   other settings are overridden like any instance's (`osctl config set GridInfoService welcome=… --instance MyGrid`,
   or files in `/etc/osctl/instances/MyGrid/overrides/`).
@@ -726,6 +729,7 @@ options, and name a command for only that branch: `osctl help --tree --options r
 | `osctl region defaults get\|set --global\|--instance <instance>` | Region defaults, for every region or one instance's. |
 | `osctl list` | Every instance with its regions. |
 | `osctl grid add\|list\|show\|set` | Grids of your own: a Robust instance and the config set its simulators use. |
+| `osctl grid start\|stop\|restart <grid>` | A grid with all its simulators, in order (`restart`: the running ones). |
 | `osctl user create\|password <grid> "First Last"` | Accounts on a running grid or standalone. |
 | `osctl config show\|explain\|diff\|generate` | An instance's generated configuration. |
 | `osctl config set <section> Key=Value… --global\|--instance <instance>` | OpenSim.ini overrides, without editing files. |

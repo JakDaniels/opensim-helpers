@@ -19,12 +19,9 @@ internal static class RunCommands
 {
     public static IEnumerable<Command> Create(CliEnvironment env, GlobalOptions globals) =>
     [
-        Lifecycle(env, globals, "start", "Start instances (all when none are named) and wait until they are ready",
-            (s, name, _, ct) => s.StartAsync(name, ct), "started"),
-        Lifecycle(env, globals, "stop", "Stop instances (all when none are named), shutting OpenSim down cleanly",
-            (s, name, force, ct) => s.StopAsync(name, force, ct), "stopped", withForce: true, warnVerb: "shut down"),
-        Lifecycle(env, globals, "restart", "Restart instances (all when none are named)",
-            (s, name, _, ct) => s.RestartAsync(name, ct), "restarted", warnVerb: "restart"),
+        Lifecycle(env, globals, "start", "Start instances (all when none are named) and wait until they are ready"),
+        Lifecycle(env, globals, "stop", "Stop instances (all when none are named), shutting OpenSim down cleanly"),
+        Lifecycle(env, globals, "restart", "Restart instances (all when none are named)"),
         Boot(env, globals, enable: true),
         Boot(env, globals, enable: false),
         Status(env, globals),
@@ -61,98 +58,132 @@ internal static class RunCommands
         return names;
     }
 
-    private static Command Lifecycle(CliEnvironment env, GlobalOptions globals, string verb, string description,
-        Func<ISupervisor, string, bool, CancellationToken, Task> action, string done, bool withForce = false, string? warnVerb = null)
+    private static Command Lifecycle(CliEnvironment env, GlobalOptions globals, string verb, string description)
     {
         var names = Names("The instances");
-        var force = new Option<bool>("--force") { Description = "Kill OpenSim straight away instead of shutting it down" };
-        var warn = new Option<string?>("--warn")
-        {
-            Description = "Warn the people in the regions this long before (e.g. 10m), again at 5 and 1 minutes; running instances only",
-        };
-        var scheduled = new Option<bool>("--scheduled")
-        {
-            Description = "What the restart timer runs: running instances only, warned as instance.ini [Schedule] WarnMinutes says",
-        };
+        var (force, warn, scheduled) = LifecycleOptions();
         var command = new Command(verb, description) { names };
-        if (withForce)
-            command.Add(force);
-        if (warnVerb is not null)
-            command.Add(warn);
-        if (verb == "restart")
-            command.Add(scheduled);
+        AddLifecycleOptions(command, verb, force, warn, scheduled);
         CliApp.SetAction(command, env, async (parse, ct) =>
         {
-            var settings = globals.Settings(parse);
             var store = new InstanceStore(globals.Paths(parse));
-            var supervisor = Supervisor(env, globals, parse);
-            var selected = Ordered(env, globals, parse, store, Selected(store, parse.GetValue(names)), verb);
-            var isScheduled = parse.GetValue(scheduled);
-            var warning = parse.GetValue(warn) is { } text ? Operations.Durations.Parse(text) : (TimeSpan?)null;
-
-            if (warnVerb is not null && (warning is not null || isScheduled))
-            {
-                // Only running instances have anyone to warn; a scheduled restart leaves stopped instances stopped.
-                var running = new List<string>();
-                foreach (var name in selected)
-                {
-                    if ((await supervisor.StatusAsync(name, ct)).State == InstanceState.Running)
-                        running.Add(name);
-                    else if (isScheduled && store.Load(name).IsRobust)
-                        await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
-                    else if (isScheduled)
-                        await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
-                }
-                if (isScheduled)
-                    selected = running;
-
-                // Instances warned for the same time are counted down together; different times run side by side.
-                // A grid's Robust has nobody in it to warn (and no RemoteAdmin): only simulators are counted down.
-                var groups = running
-                    .Where(n => !store.Load(n).IsRobust)
-                    .GroupBy(n => warning ?? TimeSpan.FromMinutes(store.Load(n).Scheduled.WarnMinutes ?? settings.Schedule.WarnMinutes))
-                    .Where(g => g.Key > TimeSpan.Zero)
-                    .ToList();
-                if (globals.IsDryRun(parse))
-                {
-                    foreach (var group in groups)
-                        await env.Out.WriteLineAsync($"would warn {string.Join(", ", group)} {Operations.Durations.Words(group.Key)} before they {warnVerb}");
-                }
-                else
-                {
-                    var countdown = new Operations.Countdown(store, env.Admin, env.Clock, TextWriter.Synchronized(env.Out));
-                    await Task.WhenAll(groups.Select(g => countdown.RunAsync([.. g], g.Key, warnVerb, ct)));
-                }
-            }
-
-            var failures = 0;
-            foreach (var name in selected)
-            {
-                if (verb == "start" && !store.Load(name).IsRobust && store.Regions(name).Count == 0)
-                {
-                    await env.Out.WriteLineAsync($"{name}: no regions, not started");
-                    continue;
-                }
-                if (verb is "start" or "restart")
-                    await ConfigWarningsAsync(env, globals, parse, name);
-                if (verb == "stop" && store.Load(name).IsRobust)
-                    await RunningSimulatorsWarningAsync(env, globals, parse, supervisor, name, selected, ct);
-                await env.Out.WriteAsync($"{verb[..1].ToUpperInvariant()}{verb[1..]}ing {name} … ".Replace("Stoping", "Stopping"));
-                try
-                {
-                    await action(supervisor, name, withForce && parse.GetValue(force), ct);
-                    await env.Out.WriteLineAsync(globals.IsDryRun(parse) ? "(dry run)" : done);
-                }
-                catch (OsctlException e)
-                {
-                    failures++;
-                    await env.Out.WriteLineAsync("FAILED");
-                    await env.Error.WriteLineAsync($"osctl: {e.Message}");
-                }
-            }
-            return failures == 0 ? 0 : CliApp.ExitFailure;
+            var request = new LifecycleRequest(verb, Selected(store, parse.GetValue(names)), parse.GetValue(force),
+                parse.GetValue(warn) is { } text ? Operations.Durations.Parse(text) : null, parse.GetValue(scheduled));
+            return await LifecycleAsync(env, globals, parse, request, ct);
         });
         return command;
+    }
+
+    /// <summary>--force on stop, --warn on stop and restart, --scheduled on restart.</summary>
+    internal static void AddLifecycleOptions(Command command, string verb, Option<bool> force, Option<string?> warn, Option<bool>? scheduled)
+    {
+        if (verb == "stop")
+            command.Add(force);
+        if (verb is "stop" or "restart")
+            command.Add(warn);
+        if (verb == "restart" && scheduled is not null)
+            command.Add(scheduled);
+    }
+
+    internal static (Option<bool> Force, Option<string?> Warn, Option<bool> Scheduled) LifecycleOptions() =>
+    (
+        new Option<bool>("--force") { Description = "Kill OpenSim straight away instead of shutting it down" },
+        new Option<string?>("--warn")
+        {
+            Description = "Warn the people in the regions this long before (e.g. 10m), again at 5 and 1 minutes; running instances only",
+        },
+        new Option<bool>("--scheduled")
+        {
+            Description = "What the restart timer runs: running instances only, warned as instance.ini [Schedule] WarnMinutes says",
+        }
+    );
+
+    /// <summary>A start, stop or restart of some instances (put in order by <see cref="LifecycleAsync"/>).</summary>
+    /// <param name="WarnVerb">What the in-world warning says will happen; default from the verb ("shut down", "restart").</param>
+    internal sealed record LifecycleRequest(string Verb, IReadOnlyList<string> Names, bool Force = false, TimeSpan? Warning = null,
+        bool Scheduled = false, string? WarnVerb = null);
+
+    /// <summary>
+    /// Starts, stops or restarts instances: grids and simulators in the right order, with in-world warnings first
+    /// (stop and restart), configuration warnings (start and restart). Exit code 1 if any failed.
+    /// </summary>
+    internal static async Task<int> LifecycleAsync(CliEnvironment env, GlobalOptions globals, ParseResult parse, LifecycleRequest request,
+        CancellationToken ct)
+    {
+        var verb = request.Verb;
+        var warnVerb = verb switch { "stop" => request.WarnVerb ?? "shut down", "restart" => request.WarnVerb ?? "restart", _ => null };
+        var done = verb switch { "start" => "started", "stop" => "stopped", _ => "restarted" };
+        var settings = globals.Settings(parse);
+        var store = new InstanceStore(globals.Paths(parse));
+        var supervisor = Supervisor(env, globals, parse);
+        var selected = Ordered(env, globals, parse, store, request.Names, verb);
+        var isScheduled = request.Scheduled;
+        var warning = request.Warning;
+
+        if (warnVerb is not null && (warning is not null || isScheduled))
+        {
+            // Only running instances have anyone to warn; a scheduled restart leaves stopped instances stopped.
+            var running = new List<string>();
+            foreach (var name in selected)
+            {
+                if ((await supervisor.StatusAsync(name, ct)).State == InstanceState.Running)
+                    running.Add(name);
+                else if (isScheduled)
+                    await env.Out.WriteLineAsync($"{name}: not running, so not restarted");
+            }
+            if (isScheduled)
+                selected = running;
+
+            // Instances warned for the same time are counted down together; different times run side by side.
+            // A grid's Robust has nobody in it to warn (and no RemoteAdmin): only simulators are counted down.
+            var groups = running
+                .Where(n => !store.Load(n).IsRobust)
+                .GroupBy(n => warning ?? TimeSpan.FromMinutes(store.Load(n).Scheduled.WarnMinutes ?? settings.Schedule.WarnMinutes))
+                .Where(g => g.Key > TimeSpan.Zero)
+                .ToList();
+            if (globals.IsDryRun(parse))
+            {
+                foreach (var group in groups)
+                    await env.Out.WriteLineAsync($"would warn {string.Join(", ", group)} {Operations.Durations.Words(group.Key)} before they {warnVerb}");
+            }
+            else
+            {
+                var countdown = new Operations.Countdown(store, env.Admin, env.Clock, TextWriter.Synchronized(env.Out));
+                await Task.WhenAll(groups.Select(g => countdown.RunAsync([.. g], g.Key, warnVerb, ct)));
+            }
+        }
+
+        var failures = 0;
+        foreach (var name in selected)
+        {
+            if (verb == "start" && !store.Load(name).IsRobust && store.Regions(name).Count == 0)
+            {
+                await env.Out.WriteLineAsync($"{name}: no regions, not started");
+                continue;
+            }
+            if (verb is "start" or "restart")
+                await ConfigWarningsAsync(env, globals, parse, name);
+            if (verb == "stop" && store.Load(name).IsRobust)
+                await RunningSimulatorsWarningAsync(env, globals, parse, supervisor, name, selected, ct);
+            await env.Out.WriteAsync($"{verb[..1].ToUpperInvariant()}{verb[1..]}ing {name} … ".Replace("Stoping", "Stopping"));
+            try
+            {
+                await (verb switch
+                {
+                    "start" => supervisor.StartAsync(name, ct),
+                    "stop" => supervisor.StopAsync(name, request.Force, ct),
+                    _ => supervisor.RestartAsync(name, ct),
+                });
+                await env.Out.WriteLineAsync(globals.IsDryRun(parse) ? "(dry run)" : done);
+            }
+            catch (OsctlException e)
+            {
+                failures++;
+                await env.Out.WriteLineAsync("FAILED");
+                await env.Error.WriteLineAsync($"osctl: {e.Message}");
+            }
+        }
+        return failures == 0 ? 0 : CliApp.ExitFailure;
     }
 
     /// <summary>

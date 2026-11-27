@@ -47,10 +47,45 @@ public class TreeTests
         Assert.Matches(@"├── instances/ +instance definitions", tree);
         Assert.Matches(@"│   └── Test1/ +standalone, build b1, sqlite", tree);
         Assert.Matches(@"│       ├── overrides/ +OpenSim\.ini overrides for this instance", tree);
-        Assert.Matches(@"│       │   ├── 50-osctl\.ini +written by 'osctl config set'", tree);
+        Assert.Matches(@"│       │   └── 50-osctl\.ini +written by 'osctl config set'", tree);
         Assert.Matches(@"│       │   └── Regions\.ini +Welcome", tree);
         Assert.Matches(@"region-defaults\.ini +\[Region Defaults\] for every region", tree);
         Assert.Matches(@"standalone\.ini +standalone", tree);
+    }
+
+    [Fact]
+    public async Task TheConfigTreeLeavesOutFilesOsctlDoesNotReadUnlessAll()
+    {
+        using var f = await WithInstance();
+        f.Write("etc/osctl/overrides/10-physics.ini~", "editor backup");
+        f.Write("etc/osctl/notes/todo.txt", "mine");
+        f.Write("etc/osctl/configsets/mine/OpenSim.ini", "[Startup]\n");
+        f.Write("etc/osctl/configsets/mine.ini", "[ConfigSet]\n    Mode = standalone\n    Load = OpenSimDefaults.ini, OpenSim.ini\n[Files]\n    OpenSim.ini = mine/OpenSim.ini\n");
+        // An instance not yet moved: only its definition is shown, not its data next to it.
+        await f.Ok("instance", "add", "Old", "--db", "sqlite", "--estate-owner", "Test User");
+        foreach (var entry in new[] { "instance.ini", "secrets.ini", "overrides", "regions", "startup_commands.txt", "shutdown_commands.txt" })
+            Directory.Move(Path.Combine(f.Paths.Etc, "instances", "Old", entry), Path.Combine(f.Instances.Dir("Old"), entry));
+        Directory.Delete(Path.Combine(f.Paths.Etc, "instances", "Old"));
+        f.Write("var/lib/osctl/instances/Old/data/fsassets/data/ab/asset.gz", "x");
+        Directory.CreateDirectory(f.Paths.Run);
+        new global::Osctl.Running.RunState(Environment.ProcessId, 1, "r1", DateTimeOffset.Now, DateTimeOffset.Now).Save(f.Instances.RunStateFile("Old"));
+
+        var tree = await f.Ok("config", "tree");
+
+        Assert.DoesNotContain("10-physics.ini~", tree);
+        Assert.DoesNotContain("notes/", tree);
+        Assert.DoesNotContain("README.txt", tree);
+        Assert.Matches(@"mine/ *\n.*└── OpenSim\.ini +read by a config set", tree);
+        Assert.Contains("instances whose definition is still here", tree);
+        Assert.DoesNotContain("fsassets", tree);
+        Assert.DoesNotContain("generated", tree);
+        Assert.Contains("(4 other files osctl does not read: 'osctl config tree --all' shows them)", tree);   // 2 + 2 READMEs
+
+        var all = await f.Ok("config", "tree", "--all");
+        Assert.Contains("10-physics.ini~", all);
+        Assert.Contains("todo.txt", all);
+        Assert.DoesNotContain("fsassets", all);
+        Assert.DoesNotContain("other files", all);
     }
 
     [Fact]

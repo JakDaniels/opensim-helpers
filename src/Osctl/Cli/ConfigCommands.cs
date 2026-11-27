@@ -29,14 +29,17 @@ internal static class ConfigCommands
             Description = "An instance: the files its configuration is made from, in the order they are read",
             Arity = ArgumentArity.ZeroOrOne,
         };
+        var all = new Option<bool>("--all") { Description = "Without an instance: every file under /etc/osctl, not only those osctl reads" };
         var command = new Command("tree",
-            "Show the configuration as a tree: the files under /etc/osctl, or for an instance the files its configuration is made from")
-        { instance };
+            "Show the configuration as a tree: the files under /etc/osctl osctl reads, or for an instance the files its configuration is made from")
+        { instance, all };
         CliApp.SetAction(command, env, async (parse, _) =>
         {
             var tree = new ConfigTree(globals.Paths(parse), globals.Settings(parse));
             var name = parse.GetValue(instance);
-            foreach (var line in Util.TextTree.Render(name is null ? tree.Files() : tree.Instance(name)))
+            if (name is not null && parse.GetValue(all))
+                throw new OsctlException("--all goes without an instance (an instance's tree shows only the files it is made from)");
+            foreach (var line in Util.TextTree.Render(name is null ? tree.Files(parse.GetValue(all)) : tree.Instance(name)))
                 await env.Out.WriteLineAsync(line);
             return 0;
         });
