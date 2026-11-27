@@ -214,7 +214,8 @@ For each start (and for `osctl config show`), in order, later wins:
    - MariaDB: `[DatabaseService]` provider and connection strings (the config set's `Include-Storage` is not
      followed); SQLite: every `URI=file:` connection string moved into the instance's `data/`.
 
-`Include-*` keys are removed from the result (they have been followed), and so are sections left empty.
+`Include-*` keys are removed from the result (they have been followed), and so are sections that held only
+includes. Other empty sections stay, as in OpenSim: `[NPC]`'s module is off when its section is missing.
 Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `/etc/osctl/region-defaults.ini`,
 then from the instance's `region-defaults.ini`, then the instance's other `regions/*.ini` (per-region module settings,
 by region name), then `regions/Regions.ini`;
