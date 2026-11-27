@@ -56,22 +56,34 @@ what aged badly. It is written in C# on .NET 10.
   overrides/*.ini           global overrides, alphabetical
   region-defaults.ini       [Region Defaults] applied to every region
   builds/<build>.ini        build definitions (repo, ref, addons, patches)
+  instances/<name>/         the instance's definition (what people set; osctl's commands write it too)
+    instance.ini            kind (sim/robust), build, config set, database, estate, schedule
+    secrets.ini             estate owner, RemoteAdmin and IAR passwords (0640)
+    overrides/*.ini         instance overrides (50-osctl.ini: written by 'osctl config set')
+    region-defaults.ini     [Region Defaults] for the instance's regions, over the global ones
+    regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
+    startup_commands.txt, shutdown_commands.txt
 /var/lib/osctl/
   builds/<build>/src/       git clone
   builds/<build>/releases/<yyyymmdd-hhmm>-<commit>/   built output (bin/)
   builds/<build>/current -> releases/…
   configsets/<set>/         cached downloaded files
-  instances/<name>/
-    instance.ini            kind (sim/robust), build, config set, database, estate, schedule
-    overrides/*.ini         instance overrides
-    regions/Regions.ini     the regions; other *.ini here = per-region module settings (as MIOS)
-    startup_commands.txt, shutdown_commands.txt
+  instances/<name>/         what the instance makes
     generated/              OpenSim.ini (combined, 0640), Regions/, config/ (empty), log4net.config — rebuilt on each start
     scriptengines/, data/ (SQLite files), backups/
 /var/cache/osctl/assets/<grid>/   Flotsam asset cache, one per grid (sharing between grids is wrong, as MIOS noted)
 /var/log/osctl/<name>/      OpenSim.log, console history
 /run/osctl/                 tmux sockets, PID files
 ```
+
+All configuration is in one tree, `/etc/osctl`; `/var/lib/osctl` holds only what osctl and OpenSim make (builds,
+generated files, data, backups) and `/run/osctl` the run state. Instances made by osctl 0.3 and earlier kept their
+definition in `/var/lib/osctl/instances/<name>/`: every osctl command (not `--dry-run`) first moves the definition
+of each stopped one to `/etc` (copy to a staging directory, rename into place, then remove the old files, since
+`/etc` and `/var` may be separate file systems). A running one is read where it is until it stops, because its
+generated OpenSim.ini points at its start-up and shutdown command files. `Instances/InstanceLayout.cs`; to be
+removed in a later release. Commands so nobody edits files by hand: `osctl region defaults get|set`
+(`--global` or `--instance`), `osctl config set <section> Key=Value … --global|--instance` (into `50-osctl.ini`).
 
 Instance names: letters, digits, `_` and `-` only (so they work unchanged as unit names, tmux sockets and DB
 names). Region names follow OpenSim's rules (MIOS's regex, plus anything OpenSim itself accepts).
@@ -96,6 +108,9 @@ osctl console <name>                 attach to the tmux console (Ctrl-a d to lea
 osctl cmd <name> "<console command>" type a command into the tmux console and print its output
 osctl logs <name> [-f]
 osctl config show <name> [--section S…] | explain <name> <Section> <Key> | diff <name>
+osctl config set <Section> Key=Value… --global|--instance I ; osctl region defaults get|set … --global|--instance I
+osctl config tree [<name>]           /etc/osctl as a tree with notes; for an instance its files in read order
+osctl help [<command>…] [--tree [--options]]   help, or the command tree (built from the commands themselves)
 osctl visitors [<name>…] [--since DATE|7d] [--csv|--json]
 osctl backup create [<name>…] [--oar] [--db] [--iar USER]… [--scheduled] ; osctl backup list|prune|iar-password
 osctl schedule restart <name> "OnCalendar spec" [--warn 10m] ; schedule backup <name> "spec" [--iar U] ; remove|list
@@ -199,8 +214,9 @@ For each start (and for `osctl config show`), in order, later wins:
      followed); SQLite: every `URI=file:` connection string moved into the instance's `data/`.
 
 `Include-*` keys are removed from the result (they have been followed), and so are sections left empty.
-Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `region-defaults.ini`,
-then the instance's other `regions/*.ini` (per-region module settings, by region name), then `regions/Regions.ini`;
+Values stay raw so OpenSim still expands `${Const|…}`. Regions: `[Region Defaults]` from `/etc/osctl/region-defaults.ini`,
+then from the instance's `region-defaults.ini`, then the instance's other `regions/*.ini` (per-region module settings,
+by region name), then `regions/Regions.ini`;
 written to `generated/Regions/Regions.ini`. `osctl config show|explain|diff|generate` work on this; passwords are
 shown as `********` unless `--show-secrets`.
 
@@ -347,6 +363,34 @@ counts down (warning time, 5 min, 1 min); in direct mode `osctl schedule` prints
   temporary file); SQLite: `sqlite3 <file> ".backup …"` of each SQLite file in `data/` (online, consistent while
   OpenSim writes). Both gzipped. The `sqlite3` program, not Microsoft.Data.Sqlite: its native library does not fit
   the single-file package. The package recommends `sqlite3`; `osctl doctor` checks it.
+- **A grid (Robust):** its databases, then its FSAssets files as `fsassets/` (decided 2026-11-26: hard-linked
+  snapshots). FSAssets names a file after its asset's SHA-256 (`data/ab/cd/ef/0123/<hash>.gz`) and never changes or
+  removes one, so a file the previous backup has (same path and size) is hard-linked (`link(2)`; copied if that
+  fails), and new files are copied and checked against their hash: each backup is whole, only new assets take space,
+  pruning stays "delete the directory". Order: the database (the index) first, then the spool's `<hash>.asset`
+  files (stored, not yet written out), then `data/`. A file leaves the spool only once it is whole in `data/`, so
+  every indexed asset is in one of the two. A new file that fails its hash and was written since a minute before the
+  start is still being written and is left out; an older one is copied as it is, with a warning. Part of `--db`
+  (the files and their index belong together); `backup.ini [Assets]` keeps the counts. Tried on the dev grid: 423
+  files, 11.5 MiB, in about a second; the next backup linked them all (48 KB on disk); every hash in the dumped
+  index was in the snapshot.
+- **Definition:** each backup holds `definition/` (instance.ini, regions/, overrides/, start-up and shutdown commands,
+  the config sets it uses; a grid also its simulators' set), decided 2026-11-26, so a lost instance can be made
+  again. Not secrets.ini, as backups are often copied off the machine.
+- **Restore** (decided 2026-11-26): `osctl backup restore <instance> [<backup name or dir>]`, only into the instance
+  the backup came from (no `--to`: a simulator's database is keyed by region UUID). Parts: `--db`, `--assets`,
+  `--definition` (instance stopped), `--oar <region>`, `--iar <user>` (running: RemoteAdmin `admin_load_oar`, which
+  answers once loaded, then `[ARCHIVER]: Successfully loaded archive`; `load iar` through `admin_console_command`,
+  then `[INVENTORY ARCHIVER]: Loaded N items … for First Last`). None given: databases and assets, and the
+  definition when the instance is gone. Always a backup of the instance as it is first (`--no-backup`), and a plan
+  shown until `--yes`. MariaDB: drop, create, feed the dump to `mariadb`. SQLite: the file replaced and its
+  `-wal`/`-shm`/`-journal` removed. Assets: `data/` replaced, the spool's files put back in `tmp/`. A simulator's
+  estate database is left alone when other instances share it (a grid's simulators) unless `--with-estates`.
+  A definition restore checks the build exists and the ports are free, writes the config sets only where missing, and
+  makes a new secrets.ini (new RemoteAdmin password). Tried on the dev root: an OAR into the running Sim1 (6 s, with
+  the backup first), the whole TestGrid (two MariaDB loads and 423 asset files in 2 s; Robust and Sim1 started and
+  the owner check passed), and Test1 deleted and made again from a copied backup (same definition and region UUIDs,
+  started).
 - **Not running:** OARs and IARs are skipped (OpenSim writes them); the databases hold everything.
 - **Pruning:** of the complete backups, keep the newest, and the newest of each of the last `KeepDaily` days and
   `KeepWeekly` ISO weeks that have one; an incomplete backup goes once a newer complete one exists.
@@ -408,7 +452,7 @@ grid's `DefaultRegion` (without one nobody can log in for the first time; the fi
 becomes it). Its log4net file comes from `Robust.exe.config`. For a simulator on a local grid: `[Const]
 BaseHostname` (the grid's host), `PublicPort` and `PrivatePort` (the grid's), `PrivURL = http://127.0.0.1`.
 
-Running: the same unit, tmux console, `osctl run`, logs, status and backups (database dump; no OAR). Robust runs
+Running: the same unit, tmux console, `osctl run`, logs, status and backups (database dumps and the FSAssets files; no OAR). Robust runs
 `[Run] RobustCommand` (`dotnet Robust.dll`) with `-inifile` and `-logconfig`. It is ready when both its ports
 answer; it is stopped by typing `shutdown` into its console (it has no RemoteAdmin). A simulator on a local grid:
 

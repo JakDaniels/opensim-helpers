@@ -27,6 +27,12 @@ public interface IRemoteAdmin
     Task<string?> SaveOarAsync(int port, string password, string region, string file, CancellationToken ct);
 
     /// <summary>
+    /// Replaces a region's contents with an OAR (admin_load_oar, not merged). OpenSim answers when it has loaded it,
+    /// which can take minutes, so this waits up to <paramref name="timeout"/>. Null when loaded, else why not.
+    /// </summary>
+    Task<string?> LoadOarAsync(int port, string password, string region, string file, TimeSpan timeout, CancellationToken ct);
+
+    /// <summary>
     /// Runs a console command (admin_console_command). Unlike typing it into the console, the command is not echoed,
     /// logged or kept in the history, so it may hold a password. Null when accepted, else why not.
     /// </summary>
@@ -40,6 +46,9 @@ public interface IRemoteAdmin
 public sealed class HttpRemoteAdmin : IRemoteAdmin
 {
     private static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    /// <summary>For calls that answer when the work is done (admin_load_oar); their own deadline ends them.</summary>
+    private static readonly HttpClient LongClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     public Task<bool> ShutdownAsync(int port, string password, TimeSpan delay, bool notice, CancellationToken ct)
     {
@@ -59,6 +68,21 @@ public sealed class HttpRemoteAdmin : IRemoteAdmin
         CallForErrorAsync(port, "admin_save_oar",
             new Dictionary<string, string> { ["password"] = password, ["region_name"] = region, ["filename"] = file }, ct);
 
+    public async Task<string?> LoadOarAsync(int port, string password, string region, string file, TimeSpan timeout, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(timeout);
+        try
+        {
+            return await CallForErrorAsync(port, "admin_load_oar",
+                new Dictionary<string, string> { ["password"] = password, ["region_name"] = region, ["filename"] = file }, deadline.Token, LongClient);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return $"OpenSim had not loaded it after {timeout.TotalMinutes:0} minutes";
+        }
+    }
+
     public Task<string?> ConsoleCommandAsync(int port, string password, string command, CancellationToken ct) =>
         CallForErrorAsync(port, "admin_console_command", new Dictionary<string, string> { ["password"] = password, ["command"] = command }, ct);
 
@@ -76,7 +100,7 @@ public sealed class HttpRemoteAdmin : IRemoteAdmin
             var members = xml.Descendants("member")
                 .Where(m => m.Element("name") is not null)
                 .ToDictionary(m => m.Element("name")!.Value, m => m.Element("value")?.Value.Trim() ?? "");
-            var failed = new[] { "success", "accepted", "saved" }
+            var failed = new[] { "success", "accepted", "saved", "loaded" }
                 .Any(k => members.TryGetValue(k, out var v) && v.ToLowerInvariant() is "0" or "false");
             if (!failed)
                 return null;
@@ -125,13 +149,14 @@ public sealed class HttpRemoteAdmin : IRemoteAdmin
         }
     }
 
-    private static async Task<string?> CallForErrorAsync(int port, string method, IReadOnlyDictionary<string, string> members, CancellationToken ct)
+    private static async Task<string?> CallForErrorAsync(int port, string method, IReadOnlyDictionary<string, string> members,
+        CancellationToken ct, HttpClient? client = null)
     {
         try
         {
             using var content = new StringContent(Request(method, members), Encoding.UTF8, "text/xml");
             // admin_save_oar holds the reply for up to 5 s while the save starts.
-            using var response = await Client.PostAsync($"http://127.0.0.1:{port}/", content, ct);
+            using var response = await (client ?? Client).PostAsync($"http://127.0.0.1:{port}/", content, ct);
             if (!response.IsSuccessStatusCode)
                 return $"RemoteAdmin answered HTTP {(int)response.StatusCode}";
             return Failure(await response.Content.ReadAsStringAsync(ct));

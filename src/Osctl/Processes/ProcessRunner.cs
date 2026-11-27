@@ -21,11 +21,13 @@ public sealed record ProcessResult(int ExitCode, string StandardOutput, string S
 /// </summary>
 /// <see cref="OutputLine"/>: when set, each line of output (stdout and stderr, as they come) is passed to it
 /// instead of being collected, for long outputs such as builds.
+/// <see cref="Input"/>: opens a stream that is copied to the program's standard input (else it gets none).
 public sealed record ProcessRunOptions(
     bool ChangesSystem = false,
     string? WorkingDirectory = null,
     IReadOnlyDictionary<string, string>? Environment = null,
-    Action<string>? OutputLine = null)
+    Action<string>? OutputLine = null,
+    Func<Stream>? Input = null)
 {
     public static ProcessRunOptions Query { get; } = new();
 
@@ -85,7 +87,9 @@ public sealed class ProcessRunner : IProcessRunner
 
         using (process)
         {
-            process.StandardInput.Close();
+            var input = options.Input is { } open ? FeedAsync(process, open, cancellationToken) : null;
+            if (input is null)
+                process.StandardInput.Close();
             if (options.OutputLine is { } sink)
                 return await StreamAsync(process, sink, cancellationToken);
 
@@ -94,6 +98,8 @@ public sealed class ProcessRunner : IProcessRunner
             try
             {
                 await process.WaitForExitAsync(cancellationToken);
+                if (input is not null)
+                    await input;
             }
             catch (OperationCanceledException)
             {
@@ -101,6 +107,24 @@ public sealed class ProcessRunner : IProcessRunner
                 throw;
             }
             return new ProcessResult(process.ExitCode, await output, await error);
+        }
+    }
+
+    /// <summary>Copies the input to the program, then closes its standard input; a program that stops reading early ends it.</summary>
+    private static async Task FeedAsync(Process process, Func<Stream> open, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var source = open();
+            await source.CopyToAsync(process.StandardInput.BaseStream, cancellationToken);
+        }
+        catch (IOException)
+        {
+            // The program exited without reading it all; its exit code says why.
+        }
+        finally
+        {
+            try { process.StandardInput.Close(); } catch (IOException) { }
         }
     }
 

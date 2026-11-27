@@ -98,6 +98,7 @@ internal static class OperationsCommands
         command.Add(BackupCreate(env, globals));
         command.Add(BackupList(env, globals));
         command.Add(BackupPrune(env, globals));
+        command.Add(BackupRestore(env, globals));
         command.Add(BackupIarPassword(env, globals));
         return command;
     }
@@ -106,7 +107,7 @@ internal static class OperationsCommands
     {
         var names = Names("The instances (default: all)");
         var oar = new Option<bool>("--oar") { Description = "OARs of the regions" };
-        var db = new Option<bool>("--db") { Description = "The databases" };
+        var db = new Option<bool>("--db") { Description = "The databases (and a grid's asset files)" };
         var iar = new Option<string[]>("--iar") { Description = "The inventory of this user (\"First Last\"; repeat for more)", AllowMultipleArgumentsPerToken = false };
         var scheduled = new Option<bool>("--scheduled")
         {
@@ -137,7 +138,7 @@ internal static class OperationsCommands
                     if (contents.Oars)
                         what.Add("OARs");
                     if (contents.Databases)
-                        what.Add("databases");
+                        what.Add(instance.IsRobust ? "databases, asset files" : "databases");
                     what.AddRange(contents.IarUsers.Select(u => $"IAR of {u}"));
                     await env.Out.WriteLineAsync($"would back up {name} ({string.Join(", ", what)}) to {new BackupStore(paths, settings).Root(name)}");
                     continue;
@@ -176,6 +177,7 @@ internal static class OperationsCommands
                 {
                     b.Instance, b.Name, b.Dir, b.Complete, b.Bytes,
                     Items = b.Items.Select(i => new { i.File, i.What, i.Error }),
+                    Assets = b.Assets is { } a ? new { a.Files, a.Copied, a.CopiedBytes, a.Skipped } : null,
                 }), CliApp.Json));
                 return 0;
             }
@@ -188,7 +190,9 @@ internal static class OperationsCommands
                 all.Select(b => (IReadOnlyList<string>)
                 [
                     b.Instance, b.Name, Size(b.Bytes), b.Complete ? "yes" : "NO",
-                    string.Join(", ", b.Items.GroupBy(i => i.What).Select(g => $"{g.Count()} {g.Key}")),
+                    string.Join(", ", b.Items.GroupBy(i => i.What).Select(g => g.Key == "assets" && b.Assets is { } a
+                        ? $"{a.Files} assets ({a.Copied} new, {Size(a.CopiedBytes)})"
+                        : $"{g.Count()} {g.Key}")),
                 ]));
             return 0;
         });
@@ -225,6 +229,89 @@ internal static class OperationsCommands
                 BackupStore.Delete(backup);
             await env.Out.WriteLineAsync($"{instance.Name}: {(dryRun ? "would remove" : "removed")} backup {backup.Name}{(backup.Complete ? "" : " (incomplete)")}");
         }
+    }
+
+    private static Command BackupRestore(CliEnvironment env, GlobalOptions globals)
+    {
+        var name = InstanceName();
+        var which = new Argument<string?>("backup")
+        {
+            Description = "A backup's name ('osctl backup list'), or a backup's directory (default: the newest complete one)",
+            Arity = ArgumentArity.ZeroOrOne,
+        };
+        var definition = new Option<bool>("--definition") { Description = "osctl's definition: instance.ini, regions, overrides (makes a lost instance again)" };
+        var db = new Option<bool>("--db") { Description = "The databases (replaced)" };
+        var assets = new Option<bool>("--assets") { Description = "A grid's asset files (replaced)" };
+        var oar = new Option<string[]>("--oar") { Description = "Load this region's OAR, replacing what is in it (repeat for more; the instance runs)", AllowMultipleArgumentsPerToken = false };
+        var iar = new Option<string[]>("--iar") { Description = "Load this user's IAR into their inventory (\"First Last\"; repeat for more; the instance runs)", AllowMultipleArgumentsPerToken = false };
+        var withEstates = new Option<bool>("--with-estates") { Description = "Also the estate database the instance shares with others (a grid's simulators)" };
+        var noBackup = new Option<bool>("--no-backup") { Description = "Do not back the instance up as it is now first" };
+        var yes = new Option<bool>("--yes") { Description = "Really restore" };
+        var command = new Command("restore",
+            "Put a backup back into its instance. With none of --definition, --db, --assets, --oar, --iar: the databases and a grid's " +
+            "asset files (the instance stopped), and the definition if the instance is gone")
+        { name, which, definition, db, assets, oar, iar, withEstates, noBackup, yes };
+        CliApp.SetAction(command, env, async (parse, ct) =>
+        {
+            var paths = globals.Paths(parse);
+            var settings = globals.Settings(parse);
+            var store = new InstanceStore(paths);
+            var instanceName = global::Osctl.Names.CheckInstance(parse.GetRequiredValue(name));
+            var restore = new RestoreRunner(paths, settings, env.Admin, env.DatabaseFactory, env.PortProbe, env.Out, env.Clock);
+            var backup = restore.Find(instanceName, parse.GetValue(which));
+            var oars = parse.GetValue(oar) ?? [];
+            var users = parse.GetValue(iar) ?? [];
+            var picked = parse.GetValue(definition) || parse.GetValue(db) || parse.GetValue(assets) || oars.Length > 0 || users.Length > 0;
+            var parts = picked
+                ? new RestoreParts(parse.GetValue(definition), parse.GetValue(db), parse.GetValue(assets), oars, users, parse.GetValue(withEstates))
+                : restore.Whole(instanceName, backup, parse.GetValue(withEstates));
+            var plan = restore.Plan(instanceName, backup, parts);
+            var exists = store.Exists(instanceName);
+            var first = exists && !parse.GetValue(noBackup);
+
+            await env.Out.WriteLineAsync($"Restore '{instanceName}' from backup {backup.Name} ({backup.Dir}){(backup.Complete ? "" : ", which is INCOMPLETE")}:");
+            if (first)
+                await env.Out.WriteLineAsync($"  - first, back '{instanceName}' up as it is now (--no-backup skips it)");
+            foreach (var step in plan.Steps)
+                await env.Out.WriteLineAsync(step.Skipped is null ? $"  - {step.What}" : $"  - not {step.What}: {step.Skipped}");
+            if (!parse.GetValue(yes) || globals.IsDryRun(parse))
+            {
+                await env.Out.WriteLineAsync("Add --yes to restore.");
+                return 0;
+            }
+
+            if (first)
+            {
+                var contents = parts.NeedsRunning
+                    ? new BackupContents(parts.Oars.Count > 0, true, parts.IarUsers)
+                    : new BackupContents(false, true, []);
+                var before = await new BackupRunner(paths, settings, env.Runner, env.Admin, env.DatabaseFactory, env.Out, env.Clock)
+                    .RunAsync(instanceName, contents, ct);
+                foreach (var item in before.Items.Where(i => !i.Ok))
+                    await env.Error.WriteLineAsync($"osctl: {instanceName}: {item.File}: {item.Error}");
+                if (!before.Complete)
+                    throw new OsctlException($"The backup of '{instanceName}' as it is now is incomplete ({before.Dir}), so nothing was restored; --no-backup restores without one");
+                await env.Out.WriteLineAsync($"{instanceName}: as it was, backed up to {before.Dir}");
+            }
+
+            var results = await restore.RunAsync(plan, ct);
+            foreach (var (step, error) in results.Where(r => r.Error is not null))
+                await env.Error.WriteLineAsync($"osctl: {instanceName}: {step.File}: {error}");
+            var done = plan.Steps.Count(s => s.Skipped is null);
+            if (results.Count(r => r.Error is null) < done)
+            {
+                await env.Out.WriteLineAsync($"{instanceName}: restore INCOMPLETE");
+                return CliApp.ExitFailure;
+            }
+            await env.Out.WriteLineAsync($"{instanceName}: restored from {backup.Name}.");
+            if (plan.Creates)
+                await env.Out.WriteLineAsync($"Next: osctl start {instanceName} (and 'osctl enable {instanceName}' to start it at boot; " +
+                    "'sudo osctl units install' if it has a schedule)");
+            else if (parts.NeedsStopped)
+                await env.Out.WriteLineAsync($"Next: osctl start {instanceName}");
+            return 0;
+        });
+        return command;
     }
 
     private static Command BackupIarPassword(CliEnvironment env, GlobalOptions globals)

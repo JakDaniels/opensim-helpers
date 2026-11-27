@@ -56,7 +56,7 @@ internal static class GridCommands
             var grids = GridsOf(env, globals, parse);
 
             var grid = Names.CheckInstance(parse.GetRequiredValue(name));
-            if (store.Exists(grid) || Directory.Exists(store.Dir(grid)))
+            if (store.Exists(grid) || store.AnyOnDisk(grid))
                 throw new OsctlException($"There is already an instance '{grid}'");
             if (sets.Exists(grid))
                 throw new OsctlException($"There is already a config set '{grid}' ({sets.DefinitionFile(grid)})");
@@ -99,7 +99,7 @@ internal static class GridCommands
             var databases = new[] { generator.DatabaseName(grid), generator.EstateDatabaseName(grid) };
             if (globals.IsDryRun(parse))
             {
-                await env.Out.WriteLineAsync($"would create grid '{grid}' in {store.Dir(grid)}:");
+                await env.Out.WriteLineAsync($"would create grid '{grid}' in {store.ConfigDir(grid)}:");
                 await env.Out.WriteAsync(Ini.IniWriter.ToText(instance.ToIni()));
                 await env.Out.WriteLineAsync($"would create the databases {string.Join(" and ", databases)}");
                 await env.Out.WriteLineAsync($"would write the config set {sets.DefinitionFile(grid)}");

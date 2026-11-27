@@ -29,8 +29,8 @@ public sealed record GeneratedConfig(
 /// Makes an instance's OpenSim configuration (PLAN.md "Configuration generation"), in this order, later wins:
 /// the config set's files with their includes (loaded as OpenSim loads them, from the build's current bin/),
 /// /etc/osctl/overrides/*.ini, the instance's overrides/*.ini, then the settings osctl sets itself ("osctl" layer).
-/// <c>Include-*</c> keys are removed from the result (they have been followed). Regions: region-defaults.ini,
-/// then the instance's other regions/*.ini (per-region module settings), then regions/Regions.ini.
+/// <c>Include-*</c> keys are removed from the result (they have been followed). Regions: /etc/osctl/region-defaults.ini,
+/// the instance's region-defaults.ini, its other regions/*.ini (per-region module settings), then regions/Regions.ini.
 /// </summary>
 public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings settings)
 {
@@ -40,6 +40,12 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
 
     /// <summary>The flags the grid's default region gets: where new avatars and Hypergrid visitors arrive.</summary>
     public const string DefaultRegionFlags = "DefaultRegion, DefaultHGRegion, FallbackRegion";
+
+    /// <summary>
+    /// Includes OpenSim's own files always make but whose file is a local choice, shipped only as a .example:
+    /// osslDefaultEnable.ini's <c>[OSSL] Include-osslEnable</c> (a config set's [Files] or overrides may supply it).
+    /// </summary>
+    private static readonly HashSet<string> OptionalIncludes = ["OSSL|Include-osslEnable"];
     public const string Log4NetFile = "log4net.config";
 
     private readonly InstanceStore instances = new(paths);
@@ -77,7 +83,8 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
                 foreach (var edit in set.Edits.Where(e => e.File == rel))
                     doc.Set(edit.Section, edit.Key, edit.Value, new IniOrigin(configSets.DefinitionFile(set.Name), 0));
             },
-            IgnoredIncludes: ignored);
+            IgnoredIncludes: ignored,
+            OptionalIncludes: OptionalIncludes);
         var loaded = IniLoader.Load(set.Load, bin, options);
         warnings.AddRange(loaded.Warnings);
         var layers = new List<IniLayer>(loaded.Layers);
@@ -248,7 +255,8 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
             Set("Estates", "DefaultEstateOwnerEMail", estate.OwnerEmail ?? "");
             var password = instances.OwnerPassword(name);
             if (string.IsNullOrEmpty(password))
-                warnings.Add($"Instance '{name}' has no estate owner password ({instances.SecretsFile(name)}); OpenSim would ask for one");
+                warnings.Add($"Instance '{name}' has no estate owner password ({instances.SecretsFile(name)}): OpenSim asks for one " +
+                    $"if it has to make the estate, and the owner's IARs need it ('osctl backup iar-password {name} \"{estate.Owner}\"')");
             else
                 Set("Estates", "DefaultEstateOwnerPassword", password);
         }
@@ -374,9 +382,12 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
 
     private IniDocument RegionsConfig(string name, List<RegionDefinition> regions)
     {
-        var defaults = File.Exists(paths.RegionDefaultsFile)
-            ? IniParser.ParseFile(paths.RegionDefaultsFile)["Region Defaults"]
-            : null;
+        var defaults = new[] { paths.RegionDefaultsFile, instances.RegionDefaultsFile(name) }
+            .Where(File.Exists)
+            .Select(f => IniParser.ParseFile(f)["Region Defaults"])
+            .OfType<IniSection>()
+            .SelectMany(d => d.Entries)
+            .ToList();
         var modules = new IniDocument();
         foreach (var file in IniFiles(instances.RegionsDir(name)).Where(f => Path.GetFileName(f) != "Regions.ini"))
             modules.Merge(IniParser.ParseFile(file));
@@ -387,7 +398,7 @@ public sealed partial class ConfigGenerator(OsctlPaths paths, OsctlSettings sett
         var doc = new IniDocument();
         foreach (var region in regions)
         {
-            foreach (var entry in defaults?.Entries ?? [])
+            foreach (var entry in defaults)
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);
             foreach (var entry in modules[region.Name]?.Entries ?? [])
                 doc.Set(region.Name, entry.Key, entry.Value, entry.Origin);

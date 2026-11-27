@@ -72,7 +72,7 @@ public class ConfigGeneratorTests
     {
         using var f = await WithInstance();
         f.Write("etc/osctl/overrides/10-all.ini", "[Startup]\n    physics = ubODE\n    MaxPoolThreads = 100\n[Network]\n    http_listener_port = 1\n");
-        f.Write("var/lib/osctl/instances/Test1/overrides/20-mine.ini", "[Startup]\n    MaxPoolThreads = 200\n    Include-Extra = x.ini\n");
+        f.Write("etc/osctl/instances/Test1/overrides/20-mine.ini", "[Startup]\n    MaxPoolThreads = 200\n    Include-Extra = x.ini\n");
 
         var g = f.Generator().Generate("Test1");
 
@@ -97,7 +97,7 @@ public class ConfigGeneratorTests
     public async Task SasVoiceWithoutStunServersIsWarnedAbout(string overrides, bool warned)
     {
         using var f = await WithInstance();
-        f.Write("var/lib/osctl/instances/Test1/overrides/50-voice.ini", overrides);
+        f.Write("etc/osctl/instances/Test1/overrides/50-voice.ini", overrides);
 
         var g = f.Generator().Generate("Test1");
 
@@ -108,7 +108,7 @@ public class ConfigGeneratorTests
     public async Task StartShowsTheConfigurationWarnings()
     {
         using var f = await WithInstance();
-        f.Write("var/lib/osctl/instances/Test1/overrides/50-voice.ini", SasVoice);
+        f.Write("etc/osctl/instances/Test1/overrides/50-voice.ini", SasVoice);
 
         var (_, _, err) = await f.Osctl("--dry-run", "start", "Test1");
 
@@ -119,7 +119,7 @@ public class ConfigGeneratorTests
     public async Task RegionsGetDefaultsThenModuleFilesThenTheirOwnSettings()
     {
         using var f = await WithInstance();
-        f.Write("var/lib/osctl/instances/Test1/regions/voice.ini", "[Welcome]\n    MaxAgents = 50\n    VoiceRoom = lobby\n");
+        f.Write("etc/osctl/instances/Test1/regions/voice.ini", "[Welcome]\n    MaxAgents = 50\n    VoiceRoom = lobby\n");
         await f.Ok("region", "set", "Welcome", "MaxAgents=40");
 
         var r = f.Generator().Generate("Test1").Regions["Welcome"]!;
@@ -130,7 +130,7 @@ public class ConfigGeneratorTests
         Assert.Equal("1000,1000", r["Location"]);
         Assert.Equal("9000", r["InternalPort"]);
 
-        f.Write("var/lib/osctl/instances/Test1/regions/typo.ini", "[Welcom]\n    MaxAgents = 1\n");
+        f.Write("etc/osctl/instances/Test1/regions/typo.ini", "[Welcom]\n    MaxAgents = 1\n");
         Assert.Contains("not a region", Assert.Throws<OsctlException>(() => f.Generator().Generate("Test1")).Message);
     }
 

@@ -23,10 +23,10 @@ public sealed class OsctlPaths
 
     public string Root { get; }
 
-    /// <summary>/etc/osctl: osctl.ini, secrets.ini, configsets/, overrides/, builds/, region-defaults.ini.</summary>
+    /// <summary>/etc/osctl: osctl.ini, secrets.ini, configsets/, overrides/, builds/, region-defaults.ini, instances/.</summary>
     public string Etc { get; }
 
-    /// <summary>/var/lib/osctl: builds/, configsets/ (cached downloads), instances/.</summary>
+    /// <summary>/var/lib/osctl: builds/, configsets/ (cached downloads), instances/ (what instances make: data, backups, …).</summary>
     public string Lib { get; }
 
     /// <summary>/var/cache/osctl: asset caches per grid.</summary>
@@ -54,7 +54,14 @@ public sealed class OsctlPaths
 
     public string InstancesDir => Path.Combine(Lib, "instances");
 
+    /// <summary>/var/lib/osctl/instances/&lt;name&gt;: what the instance makes (generated config, data, backups).</summary>
     public string InstanceDir(string name) => Path.Combine(InstancesDir, name);
+
+    /// <summary>/etc/osctl/instances: each instance's definition.</summary>
+    public string InstanceConfigsDir => Path.Combine(Etc, "instances");
+
+    /// <summary>/etc/osctl/instances/&lt;name&gt;: the instance's definition (instance.ini, regions, overrides, …).</summary>
+    public string InstanceConfigDir(string name) => Path.Combine(InstanceConfigsDir, name);
 
     /// <summary>The root from the command line, else OSCTL_ROOT, else <c>/</c>.</summary>
     public static OsctlPaths Resolve(string? rootOption)

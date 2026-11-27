@@ -16,12 +16,13 @@ namespace Osctl.Operations;
 /// <summary>What one backup holds: OARs of every region, the databases, and the inventories (IARs) of some users.</summary>
 public sealed record BackupContents(bool Oars, bool Databases, IReadOnlyList<string> IarUsers);
 
-public sealed record BackupResult(string Dir, bool Complete, IReadOnlyList<BackupItem> Items);
+public sealed record BackupResult(string Dir, bool Complete, IReadOnlyList<BackupItem> Items, AssetCounts? Assets = null);
 
 /// <summary>
 /// <c>osctl backup create</c> (PLAN.md "Backups and scheduled restarts"). OARs and IARs are written by OpenSim
 /// itself, so the instance must be running; RemoteAdmin starts each save and OpenSim.log says when it is done.
 /// Databases: mariadb-dump, or sqlite3's online .backup of each SQLite file in the instance's data/; gzipped.
+/// A grid's Robust: its databases, then its FSAssets files (<see cref="AssetSnapshot"/>), running or not.
 /// </summary>
 public sealed partial class BackupRunner(
     OsctlPaths paths,
@@ -32,7 +33,6 @@ public sealed partial class BackupRunner(
     TextWriter progress,
     TimeProvider time)
 {
-    private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(500);
     private readonly InstanceStore instances = new(paths);
     private readonly BackupStore store = new(paths, settings);
 
@@ -40,10 +40,19 @@ public sealed partial class BackupRunner(
     {
         var instance = instances.Load(name);
         var started = time.GetUtcNow();
-        var dir = Path.Combine(store.Root(name), time.GetLocalNow().ToString(BackupStore.NameFormat, System.Globalization.CultureInfo.InvariantCulture));
+        // Backups are named by the second: one made straight after another (a restore's backup of the instance as it
+        // is now, say) waits for the next.
+        string dir;
+        for (var tries = 0; ; tries++)
+        {
+            dir = Path.Combine(store.Root(name), time.GetLocalNow().ToString(BackupStore.NameFormat, System.Globalization.CultureInfo.InvariantCulture));
+            if (!Directory.Exists(dir))
+                break;
+            if (tries == 10)
+                throw new OsctlException($"{dir} already exists");
+            await Task.Delay(TimeSpan.FromMilliseconds(200), time, ct);
+        }
         var partial = dir + BackupStore.PartialSuffix;
-        if (Directory.Exists(dir))
-            throw new OsctlException($"{dir} already exists");
         FileTree.Delete(partial);
         Directory.CreateDirectory(partial);
 
@@ -52,7 +61,9 @@ public sealed partial class BackupRunner(
         var port = ConfigGenerator.BasePort(instances.Regions(name));
         var adminPassword = instances.RemoteAdminPassword(name);
 
-        if ((contents.Oars && instances.Regions(name).Count > 0) || contents.IarUsers.Count > 0)
+        if (instance.IsRobust && contents.IarUsers.Count > 0)
+            items.Add(new BackupItem("-", "iar", "a grid's inventories are saved by one of its simulators: 'osctl backup create <simulator> --iar …'"));
+        else if ((contents.Oars && instances.Regions(name).Count > 0) || contents.IarUsers.Count > 0)
         {
             if (!running)
                 await progress.WriteLineAsync($"{name}: not running, so no OARs or IARs (OpenSim writes them); the databases hold everything");
@@ -73,9 +84,28 @@ public sealed partial class BackupRunner(
         if (contents.Databases)
             items.AddRange(instance.Database == DatabaseKind.MariaDb ? await MariaDbAsync(instance, partial, ct) : await SqliteAsync(name, partial, ct));
 
-        BackupStore.WriteManifest(partial, name, started, time.GetUtcNow(), items);
+        // After the database, which is FSAssets' index (AssetSnapshot says why).
+        AssetCounts? assets = null;
+        if (contents.Databases && instance.IsRobust)
+        {
+            (assets, var item) = await AssetsAsync(instance, partial, started, ct);
+            items.Add(item);
+        }
+
+        // osctl's own definition, so that 'backup restore' can make the instance again.
+        try
+        {
+            DefinitionCopy.Save(paths, instance, partial);
+            items.Add(new BackupItem(DefinitionCopy.Dir, "definition", null));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            items.Add(new BackupItem(DefinitionCopy.Dir, "definition", e.Message));
+        }
+
+        BackupStore.WriteManifest(partial, name, started, time.GetUtcNow(), items, assets);
         Directory.Move(partial, dir);
-        return new BackupResult(dir, items.All(i => i.Ok), items);
+        return new BackupResult(dir, items.All(i => i.Ok), items, assets);
     }
 
     /// <summary>A file name made from a region or user name.</summary>
@@ -85,7 +115,7 @@ public sealed partial class BackupRunner(
     {
         var file = FileName(region) + ".oar";
         await progress.WriteLineAsync($"{name}: saving the OAR of {region} …");
-        var log = OpenSimLog(name);
+        var log = LogFile(name);
         var (_, offset) = InstanceRunner.ReadFrom(log, 0);
         if (await remoteAdmin.SaveOarAsync(port, password, region, Path.Combine(dir, file), ct) is { } refused)
             return new BackupItem(file, "oar", refused);
@@ -109,7 +139,7 @@ public sealed partial class BackupRunner(
         if (userPassword.Contains('"') || user.Contains('"'))
             return new BackupItem(file, "iar", "the console cannot take a password with \" in it");
 
-        var log = OpenSimLog(name);
+        var log = LogFile(name);
         var (_, offset) = InstanceRunner.ReadFrom(log, 0);
         var command = $"save iar {user} / \"{userPassword}\" \"{Path.Combine(dir, file)}\"";
         if (await remoteAdmin.ConsoleCommandAsync(port, password, command, ct) is { } refused)
@@ -157,6 +187,36 @@ public sealed partial class BackupRunner(
         return items;
     }
 
+    private async Task<(AssetCounts?, BackupItem)> AssetsAsync(InstanceDefinition robust, string dir, DateTimeOffset started, CancellationToken ct)
+    {
+        var source = new ConfigGenerator(paths, settings).AssetsDir(robust);
+        var previous = store.List(robust.Name).Select(b => Path.Combine(b.Dir, AssetSnapshot.Dir))
+            .LastOrDefault(Directory.Exists);
+        await progress.WriteLineAsync($"{robust.Name}: copying the asset files in {source}{(previous is null ? "" : ", linking those the last backup has")} …");
+        try
+        {
+            // Files written in the minute before the start may still be being written by FSAssets.
+            var counts = await Task.Run(() => AssetSnapshot.Take(source, Path.Combine(dir, AssetSnapshot.Dir), previous,
+                started.UtcDateTime - TimeSpan.FromMinutes(1), ct), ct);
+            await progress.WriteLineAsync($"{robust.Name}: {counts.Files} asset files, {counts.Copied} new ({Bytes(counts.CopiedBytes)})"
+                + (counts.Skipped > 0 ? $", {counts.Skipped} still being written left for the next backup" : ""));
+            if (counts.Damaged.Count > 0)
+                await progress.WriteLineAsync($"{robust.Name}: warning: {counts.Damaged.Count} asset file(s) in the grid do not match their hash (copied as they are), e.g. {counts.Damaged[0]}");
+            return (counts, new BackupItem(AssetSnapshot.Dir, "assets", null));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return (null, new BackupItem(AssetSnapshot.Dir, "assets", e.Message));
+        }
+    }
+
+    private static string Bytes(long bytes) => bytes switch
+    {
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KiB",
+        < 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024):0.#} MiB",
+        _ => $"{bytes / (1024.0 * 1024 * 1024):0.##} GiB",
+    };
+
     private async Task<List<BackupItem>> SqliteAsync(string name, string dir, CancellationToken ct)
     {
         var items = new List<BackupItem>();
@@ -182,28 +242,8 @@ public sealed partial class BackupRunner(
         return items;
     }
 
-    /// <summary>Waits for a line that says done ("") or failed (the reason) in OpenSim.log; a reason if it times out.</summary>
-    private async Task<string?> WaitForAsync(string log, long offset, Func<string, string?> verdict, CancellationToken ct)
-    {
-        var timeout = TimeSpan.FromMinutes(settings.Backups.SaveTimeoutMinutes);
-        var deadline = time.GetUtcNow() + timeout;
-        var pending = "";
-        while (true)
-        {
-            (var more, offset) = InstanceRunner.ReadFrom(log, offset);
-            pending += more;
-            var lines = pending.Split('\n');
-            pending = lines[^1];
-            foreach (var line in lines[..^1])
-            {
-                if (verdict(line) is { } said)
-                    return said.Length == 0 ? null : said.Trim();
-            }
-            if (time.GetUtcNow() >= deadline)
-                return $"not finished after {Durations.Words(timeout)} (SaveTimeoutMinutes in osctl.ini [Backups])";
-            await Task.Delay(Poll, ct);
-        }
-    }
+    private Task<string?> WaitForAsync(string log, long offset, Func<string, string?> verdict, CancellationToken ct) =>
+        OpenSimLog.WaitForAsync(log, offset, verdict, TimeSpan.FromMinutes(settings.Backups.SaveTimeoutMinutes), time, ct);
 
     /// <summary>Reads an OAR or IAR to its end (a gzipped tar), which checks it is whole. Null if it is.</summary>
     public static string? CheckArchive(string file)
@@ -243,7 +283,7 @@ public sealed partial class BackupRunner(
         File.Delete(source);
     }
 
-    private string OpenSimLog(string name) => Path.Combine(instances.LogDir(name), "OpenSim.log");
+    private string LogFile(string name) => Path.Combine(instances.LogDir(name), "OpenSim.log");
 
     [GeneratedRegex(@"[^A-Za-z0-9._-]")]
     private static partial Regex UnsafeCharacters();

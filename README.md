@@ -247,7 +247,7 @@ layers, in order; a later layer wins for any key it sets:
 1. **The config set:** the base files from the build's `bin/`, or downloaded (such as OSGrid's), loaded as OpenSim
    itself loads them, includes and all.
 2. **Global overrides:** `/etc/osctl/overrides/*.ini`, in alphabetical order, for every instance.
-3. **Instance overrides:** `/var/lib/osctl/instances/<instance>/overrides/*.ini`, in alphabetical order.
+3. **Instance overrides:** `/etc/osctl/instances/<instance>/overrides/*.ini`, in alphabetical order.
 4. **What osctl sets itself:** ports, file paths (logs, caches, script engine, databases), the database
    connection, the estate defaults and RemoteAdmin. These can't be overridden, because osctl relies on them.
 
@@ -262,12 +262,45 @@ An override file holds only the settings you want to change, under their section
     allow_grid_gods = true
 ```
 
+Or let osctl write it: `osctl config set <Section> Key=Value … --instance Test1` (or `--global` for every instance)
+keeps the settings in `50-osctl.ini` in that overrides directory; `Key=` with nothing after it removes one. Files
+named after `50-osctl.ini` (such as `90-mine.ini`) are read later and win; osctl warns when one sets the same key.
+
+```
+osctl config set Startup physics=ubODE MaxPoolThreads=200 --instance Test1
+osctl config set Permissions allow_grid_gods=true --global
+```
+
 To see the result, and where each value comes from:
 
 ```
 osctl config show Test1 --section Startup Network   # the configuration it would start with now
 osctl config explain Test1 Startup physics          # every file that set it, in order, and the final value
 osctl config diff Test1                             # what changed since its last start
+osctl config tree                                   # every file under /etc/osctl, with what each one is
+osctl config tree Test1                             # the files Test1's configuration is made from, in order
+```
+
+`osctl config tree Test1` numbers the files in the order they are read (a later one wins), with each include under
+the file that includes it:
+
+```
+Test1                                       standalone, build sas-dev, sqlite
+├── paths relative to                       /etc/osctl
+├── config set files from                   /var/lib/osctl/builds/sas-dev/current/bin
+├── OpenSim.ini                             read in this order, later wins
+│   ├── config set standalone               configsets/standalone.ini
+│   │   ├── 1. OpenSimDefaults.ini
+│   │   └── 2. OpenSim.ini                  from OpenSim.ini.example
+│   │       └── 3. config-include/Standalone.ini
+│   │           └── 4. config-include/StandaloneCommon.ini  from config-include/StandaloneCommon.ini.example
+│   ├── 5. overrides/50-osctl.ini           every instance
+│   ├── 6. instances/Test1/overrides/10-physics.ini  this instance
+│   └── 7. set by osctl
+└── Regions.ini                             for each region, in this order, later wins
+    ├── 1. region-defaults.ini              [Region Defaults] for every region
+    ├── 2. instances/Test1/region-defaults.ini
+    └── 3. instances/Test1/regions/Regions.ini  Welcome, Second Place
 ```
 
 Passwords are shown as `********` unless you add `--show-secrets`. Changes take effect at the instance's next
@@ -283,21 +316,27 @@ start (`osctl restart Test1`).
 
 Each region's settings are built in this order, a later one winning:
 
-1. `[Region Defaults]` in `/etc/osctl/region-defaults.ini`, for every region. The shipped values are MIOS's:
-   `MaxPrims = 15000`, `MaxAgents = 100`, `ExternalHostName = SYSTEMIP` and a few more.
-2. Other `.ini` files in the instance's `regions/` directory, under a `[Region Name]` section (for example, an
+1. **Global region defaults:** `[Region Defaults]` in `/etc/osctl/region-defaults.ini`, for every region. The
+   shipped values are MIOS's: `MaxPrims = 15000`, `MaxAgents = 100`, `ExternalHostName = SYSTEMIP` and a few more.
+   `osctl region defaults set MaxPrims=20000 --global` changes one.
+2. **Instance region defaults:** `[Region Defaults]` in `/etc/osctl/instances/<instance>/region-defaults.ini`, for
+   that instance's regions: `osctl region defaults set MaxAgents=40 --instance Test1`.
+3. Other `.ini` files in the instance's `regions/` directory, under a `[Region Name]` section (for example, an
    addon module's per-region settings).
-3. The region's own settings: `osctl region set Welcome MaxAgents=40 RegionType=Estate`. `Key=` with nothing
-   after it removes one.
+4. The region's own settings: `osctl region set Welcome MaxAgents=40 RegionType=Estate`.
+
+In each of these commands `Key=` with nothing after it removes a setting. `osctl region defaults get --global` or
+`--instance Test1` shows the defaults (for an instance: the global ones with its own over them; `--own` for its
+own only), with the same `--origin` and `--json` as `region get` below.
 
 `ExternalHostName = SYSTEMIP` makes OpenSim use this machine's IP address. For regions people reach over the
-internet, set it to your public DNS name, either for all regions in `region-defaults.ini` or for one region with
+internet, set it to your public DNS name, either for all regions in the region defaults or for one region with
 `osctl region set Welcome ExternalHostName=sim.example.org`.
 
 `osctl region get Welcome` shows a region's settings after these steps are applied, as `Key = Value`
 lines. Name settings to see only those, e.g. `osctl region get Welcome MaxAgents 'Max*'`; names ignore case, and
 `*` and `?` are wildcards. A name that matches nothing gives exit code 1. `--own` shows only the region's own settings
-(step 3), `--origin` adds the file and line each value comes from, and `--json` prints JSON. Passwords are shown as
+(step 4), `--origin` adds the file and line each value comes from, and `--json` prints JSON. Passwords are shown as
 `********` unless `--show-secrets`.
 
 ### Config sets
@@ -455,15 +494,15 @@ osctl start Sim1
   account first: a simulator whose owner has none does not start, and says which command makes it.
 - **Assets** are kept as files by FSAssets, not in the database: in the grid instance's `data/fsassets/`, or
   wherever `--assets-dir` (on `grid add` or `grid set`) says. The database holds only their index.
-  `osctl backup create MyGrid --db` saves the database but not these files: back the directory up as well.
+  `osctl backup create MyGrid` saves the files with the database (see [Backups](#backups)).
 - **The default region:** the grid's first region is where new avatars and Hypergrid visitors arrive.
   `osctl grid set MyGrid --default-region <region>` chooses another; restart the grid afterwards.
 - **Starting and stopping:** starting a simulator starts its grid first, `osctl start` starts grids before
   simulators, `osctl stop` stops them after, and `osctl enable Sim1` also makes the grid start at boot. A
   simulator waits for its grid to be ready.
 - **Changes:** `osctl grid set` changes the host, names and ports; restart the grid and its simulators. Robust's
-  other settings are overridden like any instance's (`/var/lib/osctl/instances/MyGrid/overrides/*.ini`, for
-  example `[GridInfoService] welcome`).
+  other settings are overridden like any instance's (`osctl config set GridInfoService welcome=… --instance MyGrid`,
+  or files in `/etc/osctl/instances/MyGrid/overrides/`).
 - **Removing:** `osctl instance delete MyGrid --yes` once its simulators are deleted; its config set goes too.
 
 **Ports.** Most grids use plain HTTP, and Hypergrid addresses are usually `http://host:8002`. Open to the internet
@@ -536,7 +575,19 @@ osctl visitors --csv > visitors.csv         also --json
 - **the databases:** the instance's and its grid's estate database with `mariadb-dump`, or each SQLite file in its
   `data/` with `sqlite3` (both gzipped);
 - **IARs** (inventories) of the users listed in `instance.ini` `[Backups] Iar`, or given with `--iar "First Last"`;
+- **for a grid:** its databases, then its asset files in `fsassets/` (FSAssets' `data/`, and in `spool/` any assets
+  not yet written out), running or not;
+- `definition/`: osctl's own definition of the instance (what is in `/etc/osctl/instances/<instance>/`: `instance.ini`,
+  its regions, region defaults, overrides, start-up and shutdown commands; and the config sets it uses), so a lost instance can be made again. Not `secrets.ini`;
 - `backup.ini`, which lists every file and whether it was saved.
+
+**A grid's asset files** never change once written, and each is named after its content's SHA-256. So each backup
+hard-links the files the previous backup already has and copies only new ones, checking each against its hash.
+Every backup directory is whole on its own, yet a week of backups takes little more space than one copy.
+`backup list` shows each backup's full size, with how much of it was new. Use `du` for the space on disk, since it
+counts a linked file once. If no hard link can be made, the file is copied. A new file that does not match its hash
+is most likely still being written: it is left for the next backup. An older one is copied as it is, with a warning.
+A grid's inventories (IARs) are saved by one of its simulators, not by the grid.
 
 OARs and IARs need the instance running, since OpenSim writes them. For a stopped instance only the databases are
 saved, and those hold everything anyway. `--oar`, `--db` and `--iar` choose parts. A backup with a failed part is
@@ -549,9 +600,44 @@ osctl sends it through RemoteAdmin, so it never shows in the console or its logs
 
 ```
 osctl backup create Test1                   OARs, databases, IARs from instance.ini
-osctl backup create Test1 --db              only the databases
+osctl backup create Test1 --db              only the databases (for a grid, its asset files too)
 osctl backup list                           every backup, its size, and whether it is complete
 osctl backup prune --dry-run                what pruning would remove
+```
+
+### Restoring
+
+`osctl backup restore <instance> [<backup>]` puts a backup back into the instance it came from (never into another
+one). `<backup>` is a name from `backup list`, or the path to a backup directory copied from elsewhere. Without it,
+the newest complete backup is used. The command first shows what it would do; add `--yes` to do it. Before changing
+anything it backs the instance up as it is now, so a restore can itself be undone (`--no-backup` skips that).
+
+| Part | Option | Instance | What it does |
+|---|---|---|---|
+| Databases | `--db` | stopped | Replaces each database (MariaDB: dropped, then loaded from the dump; SQLite: the file replaced) |
+| Asset files | `--assets` | stopped | A grid: replaces its FSAssets files with the backup's |
+| Definition | `--definition` | stopped | Puts back `instance.ini`, the regions, overrides and commands; makes a lost instance again |
+| OAR | `--oar "Region"` | running | Replaces everything in that region with its OAR (repeat for more regions) |
+| IAR | `--iar "First Last"` | running | Loads the user's IAR into their inventory: added to what is there, not replacing it |
+
+With none of these options, osctl restores the databases and, for a grid, its asset files. If the instance no longer
+exists, it also restores the definition. The databases hold the regions, assets and inventories, so OARs and IARs
+are not needed for a whole restore. Parts that need the instance stopped and parts that need it running are
+restored in two goes.
+
+**Shared estates:** a grid's simulators keep their estates in the grid's estate database, and each simulator's
+backup holds a copy of it. Restoring one simulator leaves that database alone, so it cannot wind back the other
+simulators' estates. `--with-estates` restores it anyway. Restoring the grid itself always includes it.
+
+**A lost instance:** the build it uses must exist (`osctl build add`), and its ports must be free. It gets a new
+RemoteAdmin password. Passwords are not in backups, so store a standalone's estate owner password and any IAR
+passwords again with `osctl backup iar-password`. Then `osctl start` it, and `osctl enable` it to start at boot.
+
+```
+osctl backup restore Test1                           show what restoring the newest backup would do
+osctl backup restore Test1 --yes                     restore its databases (Test1 stopped)
+osctl backup restore Test1 20261126-030000 --oar "Home" --yes    one region from that backup's OAR (Test1 running)
+osctl backup restore Test1 /mnt/old/Test1/20261126-030000 --yes  make a lost Test1 again from a copied backup
 ```
 
 **Pruning** keeps the newest backup, plus the newest of each of the last 7 days and the last 4 weeks that have one.
@@ -601,7 +687,8 @@ timers.
 | `/etc/osctl/region-defaults.ini` | Settings every region starts with. |
 | `/etc/osctl/builds/<build>.ini` | Build definitions (also written by `osctl build add`). |
 | `/var/lib/osctl/builds/<build>/` | The source clone, addons, releases, `current` (the release in use), build logs. |
-| `/var/lib/osctl/instances/<instance>/` | `instance.ini`, `secrets.ini`, `overrides/`, `regions/`, `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), `backups/`, script state. |
+| `/etc/osctl/instances/<instance>/` | The instance's definition: `instance.ini`, `secrets.ini`, `overrides/`, `region-defaults.ini`, `regions/`, start-up and shutdown commands. |
+| `/var/lib/osctl/instances/<instance>/` | What it makes: `generated/` (what OpenSim reads, rewritten at every start), `data/` (SQLite), `backups/`, script state. |
 | `/etc/systemd/system/osctl-*@<instance>.timer` | The instances' scheduled restarts and backups (written by `osctl schedule` or `sudo osctl units install`). |
 | `/var/log/osctl/<instance>/` | `OpenSim.log`, `console.log`, console history, crash reports. |
 | `/var/cache/osctl/assets/<grid>/` | The asset cache, one per grid. |
@@ -611,6 +698,9 @@ timers.
 
 - **Upgrading:** `sudo apt upgrade`, or `sudo apt install ./osctl_<new version>_amd64.deb`. Your settings, builds
   and instances are kept. Running instances carry on and use the new osctl from their next start.
+  Instances made by osctl 0.3 or earlier kept their definition in `/var/lib/osctl/instances/<instance>/`; the first
+  osctl command after the upgrade moves it to `/etc/osctl/instances/<instance>/` (a running instance once it has
+  stopped) and says so.
 - **Removing:** `sudo apt remove osctl` stops the instances and removes the program. Settings, builds, instances and
   logs stay, so a reinstall carries on where it left off.
 - **Purging:** `sudo apt purge osctl` removes `/etc/osctl`, `/var/lib/osctl`, `/var/cache/osctl` and
@@ -620,7 +710,9 @@ timers.
 
 ## Command reference
 
-`osctl --help` and `osctl <command> --help` give the options of each command.
+`osctl --help` and `osctl <command> --help` (or `osctl help <command>`) give the options of each command.
+`osctl help --tree` shows every command and subcommand as a tree; add `--options` for their arguments and
+options, and name a command for only that branch: `osctl help --tree --options region`.
 
 | Command | What it does |
 |---|---|
@@ -631,10 +723,13 @@ timers.
 | `osctl configset list\|show\|fetch` | Config sets. |
 | `osctl instance add\|list\|show\|delete` | Instances. |
 | `osctl region add\|list\|remove\|rename\|move\|set\|get` | Regions. `rename` and `move` keep the region's UUID, so its contents stay. |
+| `osctl region defaults get\|set --global\|--instance <instance>` | Region defaults, for every region or one instance's. |
 | `osctl list` | Every instance with its regions. |
 | `osctl grid add\|list\|show\|set` | Grids of your own: a Robust instance and the config set its simulators use. |
 | `osctl user create\|password <grid> "First Last"` | Accounts on a running grid or standalone. |
 | `osctl config show\|explain\|diff\|generate` | An instance's generated configuration. |
+| `osctl config set <section> Key=Value… --global\|--instance <instance>` | OpenSim.ini overrides, without editing files. |
+| `osctl config tree [instance]` | The files under `/etc/osctl`, or the files an instance's configuration is made from, as a tree. |
 | `osctl db init` | Sets up MariaDB (as root). |
 | `osctl start\|stop\|restart [instance…]` | All instances when none is named. `stop --force` kills straight away; `--warn 10m` warns people in-world first. |
 | `osctl status [instance…]` | Running, starting, stopped, broken; PID, uptime, release. |
@@ -646,6 +741,7 @@ timers.
 | `osctl backup create\|list\|prune\|iar-password` | Backups: OARs, databases, IARs. |
 | `osctl schedule restart\|backup\|remove\|list` | Scheduled restarts (with warnings) and backups. |
 | `osctl units install [--user]\|show` | The systemd units: instances, and the scheduled jobs' services and timers. |
+| `osctl help [command…] [--tree [--options]]` | Help, or every command as a tree. |
 
 **Options for every command:**
 

@@ -13,6 +13,7 @@ using Osctl.Processes;
 using Osctl.Running;
 using Osctl.Settings;
 using Osctl.Setup;
+using Osctl.Util;
 
 namespace Osctl.Cli;
 
@@ -100,7 +101,24 @@ public static class CliApp
     {
         var root = Build(env);
         var config = new InvocationConfiguration { Output = env.Out, Error = env.Error };
-        return root.Parse(args).InvokeAsync(config, cancellationToken);
+        var parse = root.Parse(args);
+        if (parse.Errors.Count == 0 && !parse.GetValue<bool>("--dry-run"))
+            MoveOldInstances(OsctlPaths.Resolve(parse.GetValue<string?>("--root")), env);
+        return parse.InvokeAsync(config, cancellationToken);
+    }
+
+    /// <summary>Instances in the layout of earlier versions get their definition moved to /etc/osctl/instances.</summary>
+    private static void MoveOldInstances(OsctlPaths paths, CliEnvironment env)
+    {
+        try
+        {
+            foreach (var line in InstanceLayout.Migrate(paths))
+                env.Error.WriteLine($"osctl: {line}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            env.Error.WriteLine($"osctl: could not move instances to {paths.InstanceConfigsDir}: {e.Message}");
+        }
     }
 
     internal static RootCommand Build(CliEnvironment env)
@@ -133,7 +151,67 @@ public static class CliApp
             root.Add(command);
         foreach (var command in OperationsCommands.Create(env, globals))
             root.Add(command);
+        root.Add(HelpCommand(env, root));
         return root;
+    }
+
+    private static Command HelpCommand(CliEnvironment env, RootCommand root)
+    {
+        var path = new Argument<string[]>("command") { Description = "The command, e.g. 'region defaults'", Arity = ArgumentArity.ZeroOrMore };
+        var tree = new Option<bool>("--tree") { Description = "Every command and subcommand as a tree, with one-line descriptions" };
+        var options = new Option<bool>("--options") { Description = "With --tree: each command's arguments and options as well" };
+        var command = new Command("help", "Show help for osctl or a command; --tree shows all the commands as a tree") { path, tree, options };
+        SetAction(command, env, async (parse, ct) =>
+        {
+            var words = parse.GetValue(path) ?? [];
+            Command target = root;
+            foreach (var word in words)
+                target = target.Subcommands.FirstOrDefault(c => !c.Hidden && (c.Name == word || c.Aliases.Contains(word)))
+                    ?? throw new OsctlException($"'{string.Join(' ', words)}': there is no such command ('osctl help --tree' lists them)");
+            if (!parse.GetValue(tree))
+            {
+                if (parse.GetValue(options))
+                    throw new OsctlException("--options goes with --tree (without it, help shows the options anyway)");
+                var config = new InvocationConfiguration { Output = env.Out, Error = env.Error };
+                return await root.Parse([.. words, "--help"]).InvokeAsync(config, ct);
+            }
+            var label = target == root ? "osctl" : "osctl " + string.Join(' ', words);
+            foreach (var line in TextTree.Render(CommandTree(target, label, parse.GetValue(options), target == root)))
+                await env.Out.WriteLineAsync(line);
+            return 0;
+        });
+        return command;
+    }
+
+    /// <summary>A command and its subcommands (not hidden ones), with their arguments and options if asked.</summary>
+    internal static TreeNode CommandTree(Command command, string label, bool withOptions, bool isRoot)
+    {
+        var node = new TreeNode(label + Arguments(command), isRoot ? null : command.Description);
+        if (withOptions)
+        {
+            // Options every command takes (--root, --dry-run) are shown once, on osctl itself.
+            foreach (var option in command.Options.Where(o => !o.Hidden && o is not System.CommandLine.Help.HelpOption and not VersionOption && (isRoot || !o.Recursive)))
+                node.Add(OptionLabel(option), option.Description);
+        }
+        foreach (var sub in command.Subcommands.Where(c => !c.Hidden))
+            node.Add(CommandTree(sub, sub.Name, withOptions, false));
+        return node;
+    }
+
+    private static string Arguments(Command command) =>
+        string.Concat(command.Arguments.Where(a => !a.Hidden).Select(a =>
+        {
+            var name = a.HelpName ?? a.Name;
+            var many = a.Arity.MaximumNumberOfValues > 1 ? "..." : "";
+            return a.Arity.MinimumNumberOfValues == 0 ? $" [{name}{many}]" : $" <{name}>{many}";
+        }));
+
+    private static string OptionLabel(Option option)
+    {
+        var names = string.Join(", ", new[] { option.Name }.Concat(option.Aliases.Order(StringComparer.Ordinal)));
+        var takesValue = option.ValueType != typeof(bool) && option.Arity.MaximumNumberOfValues > 0;
+        var value = takesValue ? $" <{option.HelpName ?? option.Name.TrimStart('-')}>" : "";
+        return names + value + (option.Required ? " (required)" : "");
     }
 
     private static Command InitCommand(CliEnvironment env, GlobalOptions globals)

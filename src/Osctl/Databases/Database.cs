@@ -24,6 +24,12 @@ public interface IDatabaseAdmin
     /// <summary>Dumps a database to a file with mariadb-dump.</summary>
     Task DumpAsync(string database, string file, CancellationToken ct);
 
+    /// <summary>
+    /// Replaces a database with a dump (<see cref="DumpAsync"/>'s, gzipped or not): drops it, creates it empty, then
+    /// feeds the dump to the mariadb client.
+    /// </summary>
+    Task LoadAsync(string database, string dumpFile, CancellationToken ct);
+
     /// <summary>The server's version and max_allowed_packet, to check that osctl can connect.</summary>
     Task<(string Version, long MaxAllowedPacket)> ProbeAsync(CancellationToken ct);
 }
@@ -86,11 +92,7 @@ internal sealed class MySqlAdmin(DatabaseSettings settings, IProcessRunner runne
 
     public async Task DumpAsync(string database, string file, CancellationToken ct)
     {
-        // The password goes in a file only the owner can read, not on the command line (where ps shows it).
-        var credentials = Path.Combine(Path.GetTempPath(), $"osctl-{Guid.NewGuid():N}.cnf");
-        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite };
-        await using (var writer = new StreamWriter(new FileStream(credentials, options)))
-            await writer.WriteAsync($"[client]\nuser={settings.AdminUser}\npassword=\"{settings.AdminPassword}\"\nhost={settings.Host}\nport={settings.Port}\n");
+        var credentials = await CredentialsFileAsync();
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
@@ -106,6 +108,42 @@ internal sealed class MySqlAdmin(DatabaseSettings settings, IProcessRunner runne
         {
             File.Delete(credentials);
         }
+    }
+
+    public async Task LoadAsync(string database, string dumpFile, CancellationToken ct)
+    {
+        await DropAsync(database, ct);
+        await CreateAsync(database, ct);
+        var credentials = await CredentialsFileAsync();
+        try
+        {
+            Stream Open()
+            {
+                var file = File.OpenRead(dumpFile);
+                return dumpFile.EndsWith(".gz", StringComparison.Ordinal) ? new System.IO.Compression.GZipStream(file, System.IO.Compression.CompressionMode.Decompress) : file;
+            }
+            var result = await runner.RunAsync("mariadb",
+                [$"--defaults-extra-file={credentials}", $"--max-allowed-packet={DatabaseLimits.RecommendedMaxAllowedPacket}", database],
+                new ProcessRunOptions(ChangesSystem: true, Input: Open), ct);
+            if (result.NotFound)
+                throw new OsctlException("mariadb is not installed (sudo apt install mariadb-client)");
+            if (!result.Succeeded)
+                throw new OsctlException($"loading {Path.GetFileName(dumpFile)} into {database} failed: {result.StandardError.Trim()}");
+        }
+        finally
+        {
+            File.Delete(credentials);
+        }
+    }
+
+    /// <summary>The password goes in a file only the owner can read, not on the command line (where ps shows it).</summary>
+    private async Task<string> CredentialsFileAsync()
+    {
+        var credentials = Path.Combine(Path.GetTempPath(), $"osctl-{Guid.NewGuid():N}.cnf");
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite };
+        await using (var writer = new StreamWriter(new FileStream(credentials, options)))
+            await writer.WriteAsync($"[client]\nuser={settings.AdminUser}\npassword=\"{settings.AdminPassword}\"\nhost={settings.Host}\nport={settings.Port}\n");
+        return credentials;
     }
 
     public async Task<(string Version, long MaxAllowedPacket)> ProbeAsync(CancellationToken ct)

@@ -8,29 +8,49 @@ using Osctl.Util;
 namespace Osctl.Instances;
 
 /// <summary>
-/// The instances on disk (PLAN.md "Layout on disk"):
+/// The instances on disk (PLAN.md "Layout on disk"): the definition, which people set, under /etc/osctl, and what
+/// the instance makes under /var/lib/osctl.
 /// <code>
-/// /var/lib/osctl/instances/&lt;name&gt;/
-///     instance.ini, secrets.ini (0640: the estate owner's password)
+/// /etc/osctl/instances/&lt;name&gt;/
+///     instance.ini, secrets.ini (0640: the estate owner's and RemoteAdmin passwords)
 ///     overrides/*.ini                  instance overrides
+///     region-defaults.ini              [Region Defaults] for the instance's regions
 ///     regions/Regions.ini              the regions; other regions/*.ini = per-region module settings
 ///     startup_commands.txt, shutdown_commands.txt
+/// /var/lib/osctl/instances/&lt;name&gt;/
 ///     generated/                       OpenSim.ini, empty.ini, Regions/Regions.ini, log4net.config (rebuilt each start)
 ///     scriptengines/, data/ (SQLite), addins/ (Mono.Addins registry), backups/
 /// /var/log/osctl/&lt;name&gt;/           OpenSim.log, console history
 /// </code>
+/// Instances made by earlier versions of osctl kept their definition in /var/lib/osctl/instances/&lt;name&gt;/ too; until
+/// <see cref="InstanceLayout"/> moves it (when the instance is stopped) it is read from there.
 /// </summary>
 public sealed class InstanceStore(OsctlPaths paths)
 {
+    /// <summary>/var/lib/osctl/instances/&lt;name&gt;: what the instance makes.</summary>
     public string Dir(string name) => paths.InstanceDir(name);
 
-    public string DefinitionFile(string name) => Path.Combine(Dir(name), "instance.ini");
+    /// <summary>
+    /// /etc/osctl/instances/&lt;name&gt;: the instance's definition; for an instance in the old layout not yet moved,
+    /// its directory under /var/lib/osctl.
+    /// </summary>
+    public string ConfigDir(string name) =>
+        IsOldLayout(name) ? Dir(name) : paths.InstanceConfigDir(name);
 
-    public string SecretsFile(string name) => Path.Combine(Dir(name), "secrets.ini");
+    /// <summary>Whether the instance's definition is still where earlier versions of osctl kept it.</summary>
+    public bool IsOldLayout(string name) =>
+        !File.Exists(Path.Combine(paths.InstanceConfigDir(name), "instance.ini")) && File.Exists(Path.Combine(Dir(name), "instance.ini"));
 
-    public string OverridesDir(string name) => Path.Combine(Dir(name), "overrides");
+    public string DefinitionFile(string name) => Path.Combine(ConfigDir(name), "instance.ini");
 
-    public string RegionsDir(string name) => Path.Combine(Dir(name), "regions");
+    public string SecretsFile(string name) => Path.Combine(ConfigDir(name), "secrets.ini");
+
+    public string OverridesDir(string name) => Path.Combine(ConfigDir(name), "overrides");
+
+    /// <summary>[Region Defaults] for this instance's regions, over /etc/osctl/region-defaults.ini.</summary>
+    public string RegionDefaultsFile(string name) => Path.Combine(ConfigDir(name), "region-defaults.ini");
+
+    public string RegionsDir(string name) => Path.Combine(ConfigDir(name), "regions");
 
     public string RegionsFile(string name) => Path.Combine(RegionsDir(name), "Regions.ini");
 
@@ -44,9 +64,9 @@ public sealed class InstanceStore(OsctlPaths paths)
 
     public string BackupsDir(string name) => Path.Combine(Dir(name), "backups");
 
-    public string StartupCommandsFile(string name) => Path.Combine(Dir(name), "startup_commands.txt");
+    public string StartupCommandsFile(string name) => Path.Combine(ConfigDir(name), "startup_commands.txt");
 
-    public string ShutdownCommandsFile(string name) => Path.Combine(Dir(name), "shutdown_commands.txt");
+    public string ShutdownCommandsFile(string name) => Path.Combine(ConfigDir(name), "shutdown_commands.txt");
 
     public string LogDir(string name) => Path.Combine(paths.Log, name);
 
@@ -73,14 +93,18 @@ public sealed class InstanceStore(OsctlPaths paths)
     public bool Exists(string name) => Osctl.Names.IsValidInstance(name) && File.Exists(DefinitionFile(name));
 
     public IReadOnlyList<string> Names() =>
-        Directory.Exists(paths.InstancesDir)
-            ? Directory.GetDirectories(paths.InstancesDir)
-                .Select(Path.GetFileName)
-                .OfType<string>()
-                .Where(n => Osctl.Names.IsValidInstance(n) && File.Exists(DefinitionFile(n)))
-                .Order(StringComparer.Ordinal)
-                .ToList()
-            : [];
+        new[] { paths.InstanceConfigsDir, paths.InstancesDir }
+            .Where(Directory.Exists)
+            .SelectMany(Directory.GetDirectories)
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .Where(n => Osctl.Names.IsValidInstance(n) && File.Exists(DefinitionFile(n)))
+            .Distinct()
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>Whether anything of an instance of this name is on disk (its definition or what it made).</summary>
+    public bool AnyOnDisk(string name) => Directory.Exists(paths.InstanceConfigDir(name)) || Directory.Exists(Dir(name));
 
     public InstanceDefinition Load(string name)
     {
@@ -124,18 +148,23 @@ public sealed class InstanceStore(OsctlPaths paths)
     public void Create(InstanceDefinition instance, string? ownerPassword, string remoteAdminPassword)
     {
         var name = instance.Name;
-        foreach (var dir in new[] { Dir(name), OverridesDir(name), RegionsDir(name), GeneratedDir(name), ScriptEnginesDir(name),
-                     DataDir(name), AddinsDir(name), BackupsDir(name) })
-            Directory.CreateDirectory(dir);
+        CreateDirectories(name);
 
         Save(instance);
         SaveRegions(name, []);
         File.WriteAllText(Path.Combine(OverridesDir(name), "README.txt"),
             "Put .ini files here to override OpenSim settings for this instance only. They are read in alphabetical\n" +
-            "order after the global overrides in /etc/osctl/overrides, and later files win.\n");
+            "order after the global overrides in /etc/osctl/overrides, and later files win.\n" +
+            $"'osctl config set <Section> Key=Value --instance {name}' writes 50-osctl.ini here for you.\n");
         foreach (var file in new[] { StartupCommandsFile(name), ShutdownCommandsFile(name) })
             File.WriteAllText(file, "; Console commands, one per line, run at start-up or shutdown. Lines starting with ; are comments.\n");
 
+        WriteSecrets(name, ownerPassword, remoteAdminPassword);
+    }
+
+    /// <summary>Writes a new secrets.ini (there must be none), readable by the group only.</summary>
+    public void WriteSecrets(string name, string? ownerPassword, string remoteAdminPassword)
+    {
         var secrets = new IniDocument();
         secrets.Set("Estate", "OwnerPassword", ownerPassword ?? "");
         secrets.Set("RemoteAdmin", "Password", remoteAdminPassword);
@@ -152,8 +181,17 @@ public sealed class InstanceStore(OsctlPaths paths)
              "and the RemoteAdmin password osctl uses (RemoteAdmin answers localhost only)."]);
     }
 
+    /// <summary>The instance's directories under /etc/osctl and /var/lib/osctl.</summary>
+    public void CreateDirectories(string name)
+    {
+        foreach (var dir in new[] { ConfigDir(name), OverridesDir(name), RegionsDir(name), Dir(name), GeneratedDir(name),
+                     ScriptEnginesDir(name), DataDir(name), AddinsDir(name), BackupsDir(name) })
+            Directory.CreateDirectory(dir);
+    }
+
     public void Delete(string name)
     {
+        FileTree.Delete(paths.InstanceConfigDir(name));
         FileTree.Delete(Dir(name));
         FileTree.Delete(LogDir(name));
     }

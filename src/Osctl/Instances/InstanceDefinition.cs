@@ -59,7 +59,7 @@ public sealed record InstanceBackups(IReadOnlyList<string> IarUsers, int? KeepDa
 }
 
 /// <summary>
-/// An instance, stored as /var/lib/osctl/instances/&lt;name&gt;/instance.ini:
+/// An instance, stored as /etc/osctl/instances/&lt;name&gt;/instance.ini:
 /// <code>
 /// [Instance]
 ///     Kind = sim                  ; or robust: a grid's services, with [Grid] instead of [Estate]

@@ -5,6 +5,26 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+- osctl: `osctl config tree` shows the files under /etc/osctl as a tree with what each one is, and
+  `osctl config tree <instance>` the files its configuration is made from, in the order they are read.
+- osctl: `osctl help --tree` shows every command as a tree (`--options` adds their options), and
+  `osctl help <command>` is the same as `--help`.
+- osctl: each instance's definition (instance.ini, secrets, regions, overrides, start-up and shutdown commands)
+  is now in `/etc/osctl/instances/<name>/`, so all configuration is under `/etc/osctl`; existing instances are
+  moved there by the first osctl command once they are stopped. `/var/lib/osctl` keeps their data and backups.
+- osctl: `osctl region defaults set|get` (`--global` or `--instance`) for region defaults, now also per instance,
+  and `osctl config set <section> Key=Value --global|--instance` for OpenSim.ini overrides, so neither needs
+  files edited by hand.
+- osctl: `osctl backup restore` puts a backup back: the databases, a grid's asset files, osctl's own definition
+  (to make a lost instance again), or one region's OAR or a user's IAR. It shows a plan until `--yes`, and
+  backs the instance up as it is now first. Backups now also hold the instance's definition (not its secrets).
+- osctl: a grid's backups now hold its FSAssets asset files too. Each backup hard-links the files the last one has
+  and copies only new ones, checked against their hashes, so a week of backups takes little more than one copy.
+- osctl: no warning about a missing config-include/osslEnable.ini at start; OpenSim ships it only as an example,
+  for local OSSL changes.
+
+## 0.3.0 (2026-11-26)
+
 - osctl: grids of your own. `osctl grid add` sets up Robust (Hypergrid, groups, offline messages, and assets as
   files with FSAssets) with a config set for its simulators; `osctl user create|password` manage accounts;
   simulators wait for their grid and check their estate owner has an account; the first region becomes the default.
