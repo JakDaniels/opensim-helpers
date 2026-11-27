@@ -5,6 +5,8 @@ the Unreleased section into the release notes.
 
 ## Unreleased
 
+## 0.4.0 (2026-11-27)
+
 - osctl: `osctl config tree` shows the files under /etc/osctl as a tree with what each one is, and
   `osctl config tree <instance>` the files its configuration is made from, in the order they are read.
 - osctl: `osctl help --tree` shows every command as a tree (`--options` adds their options), and
